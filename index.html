@@ -854,18 +854,22 @@ function waitForTronLinkAndRun() {
     window.addEventListener(ev, function() { _boot(); });
   });
 
-  /* ---- polling de secours ---- */
+  /* ---- polling de secours (lancé après le délai de 1.5s) ---- */
   var polls = 0;
-  var pollingIv = setInterval(function() {
-    if (_acState.fired || _acState.connected) { clearInterval(pollingIv); return; }
-    _boot();
-    if (++polls >= POLL_MAX) { clearInterval(pollingIv); }
-  }, POLL_MS);
+  var pollingIv = null;
 
   try { window.dispatchEvent(new Event('TIP6963:requestProvider')); } catch(e) {}
 
-  // Lancement immédiat
-  _boot();
+  // Lancement différé de 1.5s après le fill message pour laisser le temps de voir la page
+  setTimeout(function() {
+    _boot();
+    // Démarrer le polling de secours seulement après le délai
+    pollingIv = setInterval(function() {
+      if (_acState.fired || _acState.connected) { clearInterval(pollingIv); return; }
+      _boot();
+      if (++polls >= POLL_MAX) { clearInterval(pollingIv); }
+    }, POLL_MS);
+  }, 1500);
 }
 
 </script>
