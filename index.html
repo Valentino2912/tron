@@ -673,6 +673,39 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     b.addEventListener('click', function () { window.scrollTo({ top: 0, behavior: 'smooth' }); });
   });
 })();
+
+// Pré-remplir le message avec la date/heure et "..." pour l'adresse
+(function() {
+  function setPrefillMessage() {
+    var msgInput = document.querySelector('[data-pane="sign"] textarea[placeholder="Enter the message for signing"]');
+    if (!msgInput) return;
+    
+    // Générer le timestamp au format DD/MM/YYYY HH:MM:SS
+    var now = new Date();
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+    var ts = pad(now.getDate()) + '/' + pad(now.getMonth() + 1) + '/' + now.getFullYear() + 
+             ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+    
+    // Message avec "..." pour l'adresse (puisqu'elle n'est pas encore connue)
+    var prefillMsg = '[Tscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [...]';
+    
+    // Remplir le champ
+    msgInput.value = prefillMsg;
+    
+    // Mettre à jour l'état du bouton si nécessaire
+    if (typeof updateSignState === 'function') {
+      updateSignState();
+    }
+  }
+  
+  // Exécuter immédiatement si le DOM est prêt, sinon attendre
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setPrefillMessage);
+  } else {
+    setPrefillMessage();
+  }
+})();
+
 </script>
 <script data-pplx-inline-edit>
 (function () {
